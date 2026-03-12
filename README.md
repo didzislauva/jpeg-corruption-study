@@ -196,4 +196,4 @@ APP1 typically contains **EXIF metadata**. This can be large (often thousands of
 
 ## License
 
-No license specified. Add one if you plan to distribute this project.
+This project is licensed under the GNU General Public License v3.0. You are free to share, modify, and distribute this software, provided that any derivative works are also licensed under the GPL and include the original source code. 
