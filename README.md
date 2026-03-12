@@ -4,6 +4,10 @@ This project explores JPEG fault tolerance by creating controlled mutations insi
 
 The focus is to understand how small perturbations (byte arithmetic or bit flips) affect JPEG decoding and visual output.
 
+## Example GIF
+
+![Mutation GIF](mutations.gif)
+
 ## What The Script Does
 
 1. **Parses JPEG structure**
@@ -43,7 +47,7 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 ## Requirements
 
 - Python 3.8+
-- Pillow (`PIL`) for GIF creation
+- Pillow (`PIL`) only if you use `--gif`
 
 Install Pillow if needed:
 
