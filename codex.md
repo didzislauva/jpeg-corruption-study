@@ -1,0 +1,949 @@
+# JPEG Corruption Study: Explicit Project Summary
+
+## Project Identity
+
+This repository is a command-line JPEG analysis and mutation tool focused on **fault tolerance of JPEG entropy-coded data**.
+
+The core idea is:
+
+- Parse a JPEG file structurally.
+- Identify the entropy-coded byte ranges that follow each `SOS` marker.
+- Mutate bytes only inside those entropy-coded ranges.
+- Keep markers, headers, tables, and metadata intact.
+- Generate mutated JPEGs and analyze how corruption affects decoding and visual similarity.
+
+This project now also includes **non-mutation analysis modes** that operate directly on the original source JPEG:
+
+- entropy-stream byte and bit wave plots
+- sliding-window entropy-stream statistics
+- `8x8` block DCT-derived heatmaps (`DC` and `AC energy`)
+
+
+## What The Tool Does End To End
+
+For a given input JPEG, the tool can do all of the following:
+
+- Parse JPEG segments and print a detailed human-readable report.
+- Detect all entropy-coded scan ranges.
+- Randomly sample entropy byte offsets.
+- Mutate those offsets using arithmetic or bit-flip rules.
+- Generate either independent mutations or cumulative mutation progressions.
+- Repeat cumulative experiments using deterministic per-set seeds derived from a master seed.
+- Build GIFs from generated mutated images.
+- Compute image-quality metrics against the original image:
+  - `SSIM`
+  - `PSNR`
+  - `MSE`
+  - `MAE`
+- Plot metric panels for repeated cumulative experiments.
+- Plot entropy-stream wave charts from the original JPEG.
+- Plot DCT-derived `DC` and `AC energy` heatmaps from the decoded original image.
+
+
+## Current Entry Point
+
+- [jpg_fault_tolerance.py](/home/didzis/Projects/jpeg_corruption_study/jpg_fault_tolerance.py)
+
+This file is intentionally thin. It just imports and runs:
+
+- `jpeg_fault.core.cli.main`
+
+All real logic lives under:
+
+- `jpeg_fault/core/`
+
+
+## Current Module Layout
+
+- [cli.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/cli.py)
+  Main CLI, argument parsing, orchestration, mode switching, phase execution.
+
+- [models.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/models.py)
+  Shared dataclasses:
+  - `Segment`
+  - `EntropyRange`
+
+- [jpeg_parse.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/jpeg_parse.py)
+  Low-level JPEG parsing and segment decoding helpers.
+
+- [report.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/report.py)
+  Human-readable segment reporting and colored terminal formatting.
+
+- [mutate.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/mutate.py)
+  Mutation selection, mutation application, cumulative set handling, output naming.
+
+- [media.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/media.py)
+  GIF generation from generated mutation files.
+
+- [ssim_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/ssim_analysis.py)
+  Metric computation and chart generation for cumulative mutation outputs.
+
+- [wave_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/wave_analysis.py)
+  Entropy stream wave charts and sliding-window stream statistics.
+
+- [dct_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/dct_analysis.py)
+  `8x8` block DCT-based visual analysis on decoded source image luminance.
+
+- [debug.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/debug.py)
+  Minimal debug logger.
+
+
+## Core Data Model
+
+### `Segment`
+
+Defined in [models.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/models.py).
+
+Fields:
+
+- `marker: int`
+- `offset: int`
+- `name: str`
+- `length_field: Optional[int]`
+- `payload_offset: Optional[int]`
+- `payload_length: Optional[int]`
+- `total_length: int`
+
+Meaning:
+
+- Represents one JPEG segment marker plus its associated metadata.
+- For no-length markers like `SOI` and `EOI`, `length_field`, `payload_offset`, and `payload_length` are `None`.
+
+### `EntropyRange`
+
+Defined in [models.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/models.py).
+
+Fields:
+
+- `start: int`
+- `end: int`
+- `scan_index: int`
+
+Meaning:
+
+- Represents one contiguous entropy-coded data range.
+- `start` is inclusive.
+- `end` is exclusive.
+- `scan_index` identifies which scan the range belongs to.
+
+
+## JPEG Parsing Behavior
+
+Implemented primarily in [jpeg_parse.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/jpeg_parse.py).
+
+### Supported parsing model
+
+The parser:
+
+- Verifies that the file begins with `FF D8` (`SOI`).
+- Iterates segment-by-segment through the JPEG.
+- Recognizes standard marker names such as:
+  - `SOI`
+  - `EOI`
+  - `SOF0`
+  - `DHT`
+  - `DQT`
+  - `DRI`
+  - `SOS`
+  - `COM`
+  - `APP0..APP15`
+- Extracts segment payload offsets and lengths.
+
+### Entropy range detection
+
+When the parser hits `SOS`:
+
+- It computes the end of the `SOS` payload.
+- The entropy-coded stream begins immediately after that payload.
+- It scans forward until the next real marker.
+
+The parser explicitly treats these cases as **not terminating scan data**:
+
+- stuffed bytes `FF 00`
+- restart markers `FF D0` through `FF D7`
+
+The entropy range ends at the next non-stuffed, non-restart marker.
+
+### Lightweight segment decoding
+
+The parser decodes selected payloads for reporting:
+
+- `APP0` / JFIF or JFXX
+- `DQT`
+- `DHT`
+- `SOF0`
+- `SOS`
+- `DRI`
+
+This decoding is descriptive only. It is not used to re-encode JPEG data.
+
+
+## Human Report Behavior
+
+Implemented in [report.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/report.py).
+
+The report prints:
+
+- file path
+- total file size
+- first 64 bytes, color-classified as:
+  - marker
+  - length
+  - payload
+  - other
+- a segment-by-segment breakdown including:
+  - segment index
+  - segment name
+  - start offset
+  - end offset
+  - marker hex
+  - payload length
+  - total length
+  - short hex preview
+  - explanatory text
+- a summary of entropy-coded scan ranges
+
+Color modes:
+
+- `auto`
+- `always`
+- `never`
+
+
+## Mutation System
+
+Implemented in [mutate.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/mutate.py).
+
+### Mutation modes
+
+Supported `--mutate` modes:
+
+- `add1`
+- `sub1`
+- `flipall`
+- `bitflip:<bits>`
+
+Examples:
+
+- `bitflip:0`
+- `bitflip:0,1,3`
+- `bitflip:msb`
+- `bitflip:lsb`
+
+### Bitflip semantics
+
+Bit parsing:
+
+- `msb` means bit `7`
+- `lsb` means bit `0`
+- explicit bit list must contain only integers `0..7`
+
+Independent mode behavior:
+
+- For `bitflip`, each listed bit produces a separate output file.
+- Example:
+  - `bitflip:0,1`
+  - one offset
+  - two output files
+
+Cumulative mode behavior:
+
+- All listed bits are applied together to the same byte.
+- The code builds one XOR mask from the provided bits.
+- Example:
+  - `bitflip:0,3`
+  - cumulative mutation flips both bits in that byte
+  - output tag is `bit0-3`
+
+### Which bytes are mutable
+
+For mode constraints:
+
+- `add1` cannot modify `0xFF`
+- `sub1` cannot modify `0x00`
+- `flipall` can modify any byte
+- `bitflip` can modify any byte
+
+This matters mainly for cumulative mode because cumulative planning must ensure enough mutable bytes exist.
+
+
+## Mutation Strategies
+
+### 1. Independent
+
+This is the default strategy.
+
+Meaning:
+
+- Each output file starts from the original JPEG.
+- One selected offset is mutated.
+- Then the original byte is restored before moving to the next selected offset.
+
+Consequence:
+
+- Files are unrelated except that they share the same source image.
+- There is no accumulation across outputs.
+
+### 2. Cumulative
+
+Meaning:
+
+- A random sequence of offsets is chosen.
+- Output step `N` contains all prior mutations plus the new mutation(s) for step `N`.
+
+Consequence:
+
+- Image 1 has the first step’s mutations.
+- Image 2 has image 1’s mutations plus step 2’s new mutations.
+- Image `N` contains all mutations from steps `1..N`.
+
+
+## `--sample`, `--step`, and `--repeats` Semantics
+
+These are the most important CLI semantics in this project.
+
+### `--sample`
+
+Meaning depends on strategy.
+
+Independent mode:
+
+- Number of random entropy byte offsets to select.
+- `0` means all entropy offsets.
+
+Cumulative mode:
+
+- Number of cumulative output images per set.
+- `0` means as many full cumulative steps as possible.
+
+### `--step`
+
+Only valid for cumulative mode.
+
+Meaning:
+
+- Number of **new entropy bytes** added per cumulative image.
+
+Examples:
+
+- `--sample 100 --step 1`
+  - 100 images
+  - cumulative affected bytes: `1, 2, 3, ..., 100`
+
+- `--sample 100 --step 2`
+  - 100 images
+  - cumulative affected bytes: `2, 4, 6, ..., 200`
+
+Constraint:
+
+- Requested total mutable offsets per set is `sample * step`.
+- That must not exceed the number of mutable entropy bytes.
+
+Special case:
+
+- If `--sample 0`, the tool uses:
+  - `floor(mutable_entropy_bytes / step)`
+  cumulative images.
+
+### `--repeats`
+
+Only valid for cumulative mode.
+
+Meaning:
+
+- Number of independent cumulative experiment sets to generate.
+
+If `--repeats 10`:
+
+- you get 10 sets
+- each set has its own randomized offset order
+- each set is deterministic under the master seed
+
+Alias:
+
+- `--repeat` is accepted and maps to the same argument.
+
+
+## Randomness Model
+
+Implemented in [mutate.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/mutate.py).
+
+### Independent mode randomness
+
+- A `random.Random(seed)` instance is used.
+- Offsets are selected by sampling from the entropy stream index space.
+
+### Cumulative mode randomness
+
+- The master seed is expanded into one unique set seed per repeat.
+- This is done by `derive_set_seeds(master_seed, repeats)`.
+- The derived seeds are deterministic for the same CLI inputs.
+- Each set then uses its own seed to sample the offsets for that set.
+
+Result:
+
+- Same arguments reproduce the same outputs exactly.
+- Different sets are distinct from each other.
+
+
+## How Offsets Are Selected
+
+### Entropy-stream indexing
+
+The code treats all entropy ranges as one logical concatenated stream.
+
+It does not require the entropy data to be one physical contiguous range.
+
+Supporting helpers:
+
+- `total_entropy_length`
+- `build_cumulative`
+- `index_to_offset`
+
+This allows random selection over the full entropy stream, even with multiple scans.
+
+### Independent selection
+
+- Random sample over logical entropy indices.
+- Each chosen logical index is mapped back to a real file offset.
+
+### Cumulative selection
+
+The current cumulative planner uses only **mutable** offsets for the chosen mutation mode.
+
+It samples concrete file offsets from the mutable offset list directly, then groups them into chunks of size `step`.
+
+
+## Output Naming
+
+### Independent outputs
+
+Filename structure:
+
+- `{base}_off_{OFFSET}_orig_{OLD}_new_{NEW}_mut_{TAG}.jpg`
+
+Example properties encoded:
+
+- offset
+- original byte value
+- new byte value
+- mutation tag
+
+### Cumulative outputs
+
+Filename structure:
+
+- single-set:
+  - `{base}_cum_{STEP}_step_{STEP_SIZE}_off_{OFFSET}_orig_{OLD}_new_{NEW}_mut_{TAG}.jpg`
+
+- repeated sets:
+  - `{base}_set_{SET_ID}_cum_{STEP}_step_{STEP_SIZE}_off_{OFFSET}_orig_{OLD}_new_{NEW}_mut_{TAG}.jpg`
+
+If `--repeats > 1`, files are placed in:
+
+- `output_dir/set_0001/`
+- `output_dir/set_0002/`
+- etc.
+
+Important detail:
+
+- In cumulative filenames, the encoded offset/value/tag corresponds to the **last byte changed in that cumulative step**, not the full history of all prior changes.
+
+
+## Source-Only vs Mutation-Dependent Modes
+
+Implemented in [cli.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/cli.py).
+
+The CLI distinguishes between:
+
+### Mutation-dependent outputs
+
+These require generated mutated JPEG files:
+
+- `--gif`
+- `--ssim-chart`
+- `--metrics-chart-prefix`
+
+### Source-only outputs
+
+These can operate directly on the original input JPEG:
+
+- `--wave-chart`
+- `--sliding-wave-chart`
+- `--dc-heatmap`
+- `--ac-energy-heatmap`
+
+### Source-only execution shortcut
+
+If the command requests only source-only outputs and no mutation-dependent outputs:
+
+- the tool skips mutation generation entirely
+- no mutation files are written
+- analysis runs directly on the source JPEG
+
+This behavior was added intentionally to avoid unnecessary work for entropy-stream and DCT visualizations.
+
+
+## GIF Generation
+
+Implemented in [media.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/media.py).
+
+Behavior:
+
+- Opens all matched mutation files that decode successfully with Pillow.
+- Converts frames to `RGB`.
+- Optionally shuffles frame order using the main seed.
+- Writes a GIF using:
+  - `--gif-fps`
+  - `--gif-loop`
+
+If no mutation images decode:
+
+- it returns `0` frames rather than crashing.
+
+
+## Metric Analysis: SSIM, PSNR, MSE, MAE
+
+Implemented in [ssim_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/ssim_analysis.py).
+
+### Metrics supported
+
+- `ssim`
+- `psnr`
+- `mse`
+- `mae`
+
+### Important comparison baseline
+
+All metric calculations compare each mutated image to the **original input image**, not to the previous cumulative image.
+
+This is a critical project behavior.
+
+### Decode failure handling
+
+If a mutated file cannot be decoded:
+
+- its metric value is `None`
+- internally this becomes `NaN` in the score matrix
+- it is excluded from quantile summaries
+- it still affects decode-success statistics
+
+### Multiprocessing
+
+Metric computation defaults to:
+
+- all detected CPU cores
+
+Controlled by:
+
+- `--jobs`
+
+Behavior:
+
+- `--jobs` omitted: use all detected cores
+- `--jobs 1`: sequential path
+- `--jobs N`: use up to `min(N, detected_cores)`
+
+### Cumulative path grouping
+
+Metric analysis expects cumulative outputs and groups them by parsing file names:
+
+- set id
+- cumulative step index
+- step size
+
+It rejects mixed cumulative step sizes inside the same analysis input set.
+
+### X-axis meaning in metric charts
+
+The X-axis is:
+
+- `affected_bytes = cumulative_step * step_size`
+
+This was explicitly fixed to avoid showing cumulative step count instead of actual bytes affected.
+
+### Three-panel metric chart format
+
+For every selected metric, the chart contains:
+
+- Panel A:
+  every repetition plotted as its own line
+
+- Panel B:
+  quantile summary lines:
+  - median
+  - `q25`
+  - `q75`
+  - `q10`
+  - `q90`
+
+- Panel C:
+  decode success rate
+
+### Quantile caveat
+
+Panel B uses only decodable samples at each X position.
+
+This means the effective sample size can shrink as corruption increases.
+
+That behavior is currently known and should be interpreted carefully.
+
+
+## Entropy Stream Wave Analysis
+
+Implemented in [wave_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/wave_analysis.py).
+
+These analyses operate on the concatenated entropy-coded bytes from all scans.
+
+### `--wave-chart`
+
+Produces a 2-panel chart:
+
+- Panel 1:
+  raw byte values over entropy byte index
+
+- Panel 2:
+  unpacked bits over bit index
+
+This is a visualization of the encoded stream as a sequence, not a statement that JPEG entropy data is physically a wave.
+
+### `--sliding-wave-chart`
+
+Produces a 3-panel chart over a rolling window:
+
+- rolling mean
+- rolling variance
+- rolling entropy
+
+Window size:
+
+- controlled by `--wave-window`
+- default is `256`
+
+### Downsampling
+
+To keep charts manageable for long streams:
+
+- byte and sliding-value series are downsampled to about `25,000` points
+- bit series are downsampled to about `50,000` points
+
+### Entropy definition here
+
+Rolling entropy is computed over byte value frequencies in the current window:
+
+- histogram over 256 byte values
+- Shannon entropy in bits
+
+It is **not** JPEG symbol entropy after Huffman decoding.
+
+
+## DCT-Based Heatmaps
+
+Implemented in [dct_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/dct_analysis.py).
+
+These are source-image analyses, not direct bitstream decoders.
+
+Important:
+
+- They operate on the **decoded image**.
+- They do **not** parse JPEG coefficient blocks from the compressed bitstream.
+- They recompute an `8x8` block DCT on the decoded luminance plane.
+
+This is still useful for visualization, but it is not equivalent to extracting the original JPEG quantized coefficients.
+
+### Luminance conversion
+
+The tool converts decoded `RGB` to luma using:
+
+- `0.299 * R + 0.587 * G + 0.114 * B`
+
+### Block grid handling
+
+- The image is cropped to a multiple of `8x8`.
+- If either cropped dimension is smaller than `8`, the heatmap analysis fails.
+
+### `--dc-heatmap`
+
+Produces a heatmap where each cell corresponds to one `8x8` block and stores:
+
+- the block DCT coefficient at position `(0, 0)`
+
+This gives a coarse low-frequency structure map.
+
+### `--ac-energy-heatmap`
+
+Produces a heatmap where each cell corresponds to one `8x8` block and stores:
+
+- `sum(abs(coefficients)) - abs(DC)`
+
+Meaning:
+
+- total non-DC coefficient magnitude per block
+
+This is a simple block-level texture/detail energy measure.
+
+
+## Debug Logging
+
+Implemented in [debug.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/debug.py).
+
+Current philosophy:
+
+- Debug output is **selective**.
+- The project previously had broad function entry/exit tracing, but that was removed because it was too noisy.
+
+Current debug logs include targeted information such as:
+
+- input and entropy summary
+- selected options
+- mutation generation timings
+- chosen repeat seeds
+- number of files found for analysis
+- detected CPU cores and used worker count
+- metric compute timings
+- decode success counts
+- wave chart sizing and downsampling
+- DCT heatmap block sizes and timing
+
+Debug output goes to:
+
+- `stderr`
+
+Enabled by:
+
+- `--debug`
+
+
+## CLI Behavior Summary
+
+Implemented in [cli.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/cli.py).
+
+### Main execution order
+
+High-level order:
+
+1. Parse arguments.
+2. Read input JPEG bytes.
+3. Parse JPEG structure.
+4. Print the report.
+5. If `--report-only`, stop.
+6. Validate runtime arguments.
+7. Decide whether this is:
+   - source-only mode
+   - mutation-producing mode
+8. If mutation-producing:
+   - generate mutations
+   - discover files created in this run
+   - run GIF and/or metric phases if requested
+9. Independently run source-only analyses if requested.
+10. Exit.
+
+### Post-processing file selection
+
+When mutation generation runs, the CLI tries to analyze only files produced by the current run:
+
+- records matching files before mutation
+- records matching files after mutation
+- uses set difference to find new files
+
+Fallback:
+
+- if no new files are detected, it falls back to all matching mutation files
+
+
+## Error Handling and Validation
+
+Current validations include:
+
+- `--repeats` invalid outside cumulative mode
+- `--step` invalid outside cumulative mode
+- `--step < 1` rejected
+- `--wave-window < 1` rejected
+- cumulative total mutable offsets cannot exceed available mutable entropy bytes
+- mixed cumulative step sizes in metric analysis are rejected
+- source image too small for `8x8` DCT heatmaps is rejected
+- missing optional dependencies are reported with installation hints
+
+
+## Optional Dependencies by Feature
+
+### Always needed
+
+- Python itself
+
+### GIF
+
+- Pillow
+
+### Metric charts
+
+- Pillow
+- matplotlib
+- numpy
+- scikit-image for `SSIM`
+
+Note:
+
+- The code path imports `scikit-image` only when `metric == "ssim"`.
+
+### Wave charts
+
+- matplotlib
+- numpy
+
+### DCT heatmaps
+
+- Pillow
+- matplotlib
+- numpy
+
+### Tests
+
+- pytest
+
+
+## Tests Present
+
+Current test suite lives under:
+
+- `tests/`
+
+Key files:
+
+- [test_cli.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_cli.py)
+- [test_mutate.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_mutate.py)
+- [test_jpeg_parse.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_jpeg_parse.py)
+- [test_report.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_report.py)
+- [test_media.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_media.py)
+- [test_ssim_analysis.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_ssim_analysis.py)
+- [test_wave_analysis.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_wave_analysis.py)
+- [test_dct_analysis.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_dct_analysis.py)
+- [test_models_debug.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_models_debug.py)
+- [conftest.py](/home/didzis/Projects/jpeg_corruption_study/tests/conftest.py)
+
+### What tests cover
+
+The tests currently cover:
+
+- CLI parsing and validation
+- report and parser basics
+- mutation logic
+- repeat aliasing
+- cumulative step semantics
+- metric helpers and chart generation
+- multiprocessing metric path via monkeypatching
+- wave analysis helpers and output files
+- DCT heatmap helpers and output files
+- source-only mode skipping mutations
+
+
+## Known Design Choices and Limitations
+
+These are not bugs by themselves. They are the current design.
+
+### 1. DCT heatmaps are image-domain DCT, not JPEG coefficient extraction
+
+The heatmaps are based on:
+
+- decoded RGB image
+- converted to luma
+- fresh `8x8` DCT
+
+They are useful but not the same as visualizing the actual Huffman-decoded quantized JPEG coefficients.
+
+### 2. Metric quantiles exclude undecodable files
+
+Panel B in metric charts summarizes only decodable images.
+
+That means:
+
+- sample size may shrink with increasing corruption
+- quantile trends should be read together with Panel C decode success
+
+### 3. Cumulative filename metadata records only the last offset changed in that step
+
+It does not encode the full mutation history.
+
+### 4. Wave charts visualize byte and bit sequences directly
+
+These are exploratory visualizations.
+
+They are not physical signal plots and not semantically aligned to JPEG block structure.
+
+### 5. Source-only mode currently excludes metric charts
+
+Metric charts still require mutation files because they compare multiple generated outputs.
+
+
+## Practical Example Command Families
+
+### Report only
+
+```bash
+./jpg_fault_tolerance.py portret.jpg --report-only
+```
+
+### Independent mutations
+
+```bash
+./jpg_fault_tolerance.py portret.jpg --mutation-apply independent --mutate add1 --sample 100 --seed 3
+```
+
+### Cumulative mutations with 2 bytes added per image
+
+```bash
+./jpg_fault_tolerance.py portret.jpg --mutation-apply cumulative --sample 100 --step 2 --seed 42
+```
+
+### Repeated cumulative experiment
+
+```bash
+./jpg_fault_tolerance.py portret.jpg --mutation-apply cumulative --sample 100 --step 2 --repeats 10 --seed 42
+```
+
+### Metric charts
+
+```bash
+./jpg_fault_tolerance.py portret.jpg --mutation-apply cumulative --sample 100 --step 2 --repeats 10 --seed 42 --metrics ssim,psnr,mse,mae --metrics-chart-prefix out_metrics
+```
+
+### Source-only entropy stream plots
+
+```bash
+./jpg_fault_tolerance.py portret.jpg --wave-chart wave.png --sliding-wave-chart slide.png --wave-window 256
+```
+
+### Source-only DCT heatmaps
+
+```bash
+./jpg_fault_tolerance.py portret.jpg --dc-heatmap dc.png --ac-energy-heatmap ac.png
+```
+
+
+## Current Verification Status
+
+At the time of this summary, the implemented automated test suite passes with:
+
+- `45 passed`
+
+This reflects the state after:
+
+- cumulative step support
+- repeated cumulative sets
+- metric chart support for `SSIM`, `PSNR`, `MSE`, `MAE`
+- source-only wave charts
+- source-only `DC` and `AC energy` heatmaps
+- source-only mode skipping mutation generation
+
+
+## Short Mental Model Of The Project
+
+If someone needs the shortest technically correct mental model, it is this:
+
+- The project mutates only JPEG entropy-coded bytes.
+- It supports independent and cumulative mutation experiments.
+- Repeated cumulative experiments are deterministic under a master seed.
+- Metric charts compare each mutated decode to the original image.
+- Wave plots inspect the raw entropy byte stream.
+- `DC` and `AC energy` heatmaps inspect the decoded image through recomputed `8x8` DCT blocks.
+- The CLI avoids generating mutations when only source-only analyses are requested.
