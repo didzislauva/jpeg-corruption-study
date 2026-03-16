@@ -28,6 +28,7 @@ For a given input JPEG, the tool can do all of the following:
 - Randomly sample entropy byte offsets.
 - Mutate those offsets using arithmetic or bit-flip rules.
 - Generate either independent mutations or cumulative mutation progressions.
+- Generate sequential cumulative-style mutations starting from a seeded point.
 - Repeat cumulative experiments using deterministic per-set seeds derived from a master seed.
 - Build GIFs from generated mutated images.
 - Compute image-quality metrics against the original image:
@@ -221,6 +222,8 @@ Supported `--mutate` modes:
 - `add1`
 - `sub1`
 - `flipall`
+- `ff`
+- `00`
 - `bitflip:<bits>`
 
 Examples:
@@ -262,9 +265,23 @@ For mode constraints:
 - `add1` cannot modify `0xFF`
 - `sub1` cannot modify `0x00`
 - `flipall` can modify any byte
+- `ff` cannot modify `0xFF`
+- `00` cannot modify `0x00`
 - `bitflip` can modify any byte
 
 This matters mainly for cumulative mode because cumulative planning must ensure enough mutable bytes exist.
+
+### Overflow wrapping for add1/sub1
+
+By default:
+
+- `add1` leaves `0xFF` unchanged
+- `sub1` leaves `0x00` unchanged
+
+If `--overflow-wrap` is set:
+
+- `add1` wraps `0xFF -> 0x00`
+- `sub1` wraps `0x00 -> 0xFF`
 
 
 ## Mutation Strategies
@@ -297,6 +314,20 @@ Consequence:
 - Image 2 has image 1’s mutations plus step 2’s new mutations.
 - Image `N` contains all mutations from steps `1..N`.
 
+### 3. Sequential
+
+Meaning:
+
+- A start position is chosen in the mutable entropy stream using the seed.
+- Output step `N` contains all prior mutations plus the next sequential bytes.
+- Each step adds `--step` new bytes, like cumulative.
+
+Consequence:
+
+- Image 1 mutates the first step’s bytes in the sequence.
+- Image 2 mutates image 1’s bytes plus the next step’s bytes.
+- Positions are contiguous rather than randomly scattered.
+
 
 ## `--sample`, `--step`, and `--repeats` Semantics
 
@@ -316,9 +347,14 @@ Cumulative mode:
 - Number of cumulative output images per set.
 - `0` means as many full cumulative steps as possible.
 
+Sequential mode:
+
+- Number of sequential output images per set.
+- `0` means as many full sequential steps as possible.
+
 ### `--step`
 
-Only valid for cumulative mode.
+Only valid for cumulative or sequential mode.
 
 Meaning:
 
@@ -751,6 +787,82 @@ Fallback:
 - if no new files are detected, it falls back to all matching mutation files
 
 
+## TUI Overview
+
+The project includes a Textual fullscreen TUI:
+
+- Launch with `./jpg_fault_tolerance.py --tui` (alias `--gui`)
+- Left menu: Input/Info/Tools/Mutation/Strategy/Outputs/Run
+- File browser shows directories; a JPEG-only list is shown for selection
+
+### Info Tabs
+
+- General: file size, segments, scans, entropy bytes
+- Segments: per-segment summary with health status and issues
+- Details: per-segment explanations
+- Entropy: scan ranges
+- APP0: decoded fields + colorized hex view
+
+### Segment Health Checks
+
+- OK: no detected issues
+- WARN: unusual but non-fatal (e.g., gaps between markers)
+- FAIL: structural problems (bounds/overlaps/missing data)
+
+### APP0 Editor
+
+- Simple mode: structured fields (identifier, version, units, densities, thumbnails)
+- Advanced mode: raw hex payload editor
+- Manual length toggle (dangerous): allows length field mismatch
+- Live preview updates decoded + hex view on edit
+- Saves a new file (`*_app0_edit.jpg`)
+
+### Tools Tab
+
+- APPn Writer: inserts a custom APPn segment with payload hex or file
+- Inserts after the last APPn segment near file start
+- Payload limit: 65,533 bytes
+
+
+## API Layer
+
+The core API lives in `jpeg_fault/core/api.py` and is the primary integration
+surface for future UI layers (TUI/GUI) and scripting.
+
+
+## Programming Rule: Function Size
+
+All new functions should be modular and kept to 60 lines or fewer where
+practical. If a function grows beyond this, refactor into helper functions.
+
+
+## Tools: Custom APPn Writer
+
+There is a separate helper CLI for inserting custom APPn segments:
+
+- `./jpg_fault_tools.py insert-appn <input.jpg> --appn N --payload-hex "..."`
+- Optional `--identifier` prefix and `--payload-file` input
+- Default output: `<stem>_appNN.jpg`
+
+Implementation:
+
+- `jpeg_fault/core/tools.py` for insertion helpers
+- `jpg_fault_tools.py` for CLI wiring
+
+
+## Handoff Summary (For Next Session)
+
+- Core mutation system supports independent, cumulative, and sequential strategies.
+- New mutation modes: `ff`, `00`, and overflow wrapping for `add1/sub1`.
+- Textual TUI is the primary interactive UI (`--tui`), with:
+  - File browser + JPEG-only list
+  - Info tabs (General/Segments/Details/Entropy/APP0)
+  - APP0 editor (simple + advanced, live preview, save new file)
+  - Tools tab with APPn writer
+- API layer (`jpeg_fault/core/api.py`) is the stable integration surface for UI layers.
+- Function size guideline: keep functions ≤ 60 lines; refactor as needed.
+
+
 ## Error Handling and Validation
 
 Current validations include:
@@ -895,6 +1007,12 @@ Metric charts still require mutation files because they compare multiple generat
 ./jpg_fault_tolerance.py portret.jpg --mutation-apply cumulative --sample 100 --step 2 --seed 42
 ```
 
+### Sequential mutations with overflow wrap
+
+```bash
+./jpg_fault_tolerance.py portret.jpg --mutation-apply sequential --sample 100 --step 2 --seed 42 --overflow-wrap
+```
+
 ### Repeated cumulative experiment
 
 ```bash
@@ -941,7 +1059,7 @@ This reflects the state after:
 If someone needs the shortest technically correct mental model, it is this:
 
 - The project mutates only JPEG entropy-coded bytes.
-- It supports independent and cumulative mutation experiments.
+- It supports independent, cumulative, and sequential mutation experiments.
 - Repeated cumulative experiments are deterministic under a master seed.
 - Metric charts compare each mutated decode to the original image.
 - Wave plots inspect the raw entropy byte stream.

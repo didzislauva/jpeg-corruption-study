@@ -1,3 +1,10 @@
+"""
+Entropy stream visualization utilities.
+
+This module generates wave charts over the raw entropy-coded byte stream,
+including byte and bit plots as well as sliding-window statistics.
+"""
+
 import time
 from typing import Any, List, Sequence, Tuple
 
@@ -6,6 +13,9 @@ from .models import EntropyRange
 
 
 def wave_deps() -> Tuple[Any, Any]:
+    """
+    Load optional dependencies for wave chart generation.
+    """
     try:
         import matplotlib.pyplot as plt
         import numpy as np
@@ -17,6 +27,9 @@ def wave_deps() -> Tuple[Any, Any]:
 
 
 def entropy_bytes(data: bytes, entropy_ranges: Sequence[EntropyRange]) -> bytes:
+    """
+    Concatenate entropy-coded data from all scan ranges.
+    """
     chunks: List[bytes] = []
     for r in entropy_ranges:
         chunks.append(data[r.start:r.end])
@@ -24,6 +37,9 @@ def entropy_bytes(data: bytes, entropy_ranges: Sequence[EntropyRange]) -> bytes:
 
 
 def bytes_to_bit_array(stream: bytes, np: Any) -> Any:
+    """
+    Unpack a byte stream into a 0/1 bit array.
+    """
     if not stream:
         return np.array([], dtype=np.uint8)
     arr = np.frombuffer(stream, dtype=np.uint8)
@@ -31,6 +47,9 @@ def bytes_to_bit_array(stream: bytes, np: Any) -> Any:
 
 
 def maybe_downsample(series: Any, max_points: int, np: Any) -> Tuple[Any, int]:
+    """
+    Downsample a series to at most max_points, returning (series, stride).
+    """
     n = int(series.shape[0])
     if n <= max_points:
         return series, 1
@@ -39,6 +58,9 @@ def maybe_downsample(series: Any, max_points: int, np: Any) -> Tuple[Any, int]:
 
 
 def rolling_mean_var(stream: bytes, window: int, np: Any) -> Tuple[Any, Any]:
+    """
+    Compute rolling mean and variance over a byte stream.
+    """
     if window < 1:
         raise ValueError(f"--wave-window must be >= 1, got {window}")
     arr = np.frombuffer(stream, dtype=np.uint8).astype(np.float64)
@@ -52,6 +74,9 @@ def rolling_mean_var(stream: bytes, window: int, np: Any) -> Tuple[Any, Any]:
 
 
 def rolling_entropy(stream: bytes, window: int, np: Any) -> Any:
+    """
+    Compute rolling Shannon entropy over a byte stream.
+    """
     if window < 1:
         raise ValueError(f"--wave-window must be >= 1, got {window}")
     arr = np.frombuffer(stream, dtype=np.uint8)
@@ -81,6 +106,9 @@ def write_wave_chart(
     out_path: str,
     debug: bool,
 ) -> int:
+    """
+    Write a 2-panel chart of byte values and bit values over entropy stream.
+    """
     np, plt = wave_deps()
     stream = entropy_bytes(data, entropy_ranges)
     if not stream:
@@ -122,6 +150,9 @@ def write_sliding_wave_chart(
     window: int,
     debug: bool,
 ) -> int:
+    """
+    Write a 3-panel sliding window chart of mean, variance, and entropy.
+    """
     np, plt = wave_deps()
     stream = entropy_bytes(data, entropy_ranges)
     if not stream:

@@ -1,3 +1,10 @@
+"""
+DCT-based heatmaps computed from the decoded image.
+
+These heatmaps are computed on the decoded luminance channel and are not
+equivalent to JPEG coefficient extraction from the compressed bitstream.
+"""
+
 import math
 import time
 from typing import Any, Tuple
@@ -6,6 +13,9 @@ from .debug import debug_log
 
 
 def dct_deps() -> Tuple[Any, Any, Any]:
+    """
+    Load optional dependencies for DCT heatmap generation.
+    """
     try:
         from PIL import Image
         import matplotlib.pyplot as plt
@@ -18,12 +28,18 @@ def dct_deps() -> Tuple[Any, Any, Any]:
 
 
 def load_luma(path: str, np: Any, image_module: Any) -> Any:
+    """
+    Load an image and convert it to a luminance array.
+    """
     img = image_module.open(path).convert("RGB")
     arr = np.asarray(img, dtype=np.float64)
     return (0.299 * arr[:, :, 0]) + (0.587 * arr[:, :, 1]) + (0.114 * arr[:, :, 2])
 
 
 def crop_to_block_grid(y_plane: Any, np: Any) -> Any:
+    """
+    Crop a luminance plane to the largest 8x8-aligned rectangle.
+    """
     h, w = y_plane.shape
     h8 = (h // 8) * 8
     w8 = (w // 8) * 8
@@ -33,6 +49,9 @@ def crop_to_block_grid(y_plane: Any, np: Any) -> Any:
 
 
 def dct_basis_8(np: Any) -> Any:
+    """
+    Construct the 8x8 DCT basis matrix.
+    """
     c = np.zeros((8, 8), dtype=np.float64)
     for u in range(8):
         alpha = math.sqrt(1.0 / 8.0) if u == 0 else math.sqrt(2.0 / 8.0)
@@ -42,6 +61,9 @@ def dct_basis_8(np: Any) -> Any:
 
 
 def block_maps(y_plane: Any, np: Any) -> Tuple[Any, Any]:
+    """
+    Compute per-block DC coefficients and AC energy from the luminance plane.
+    """
     y = crop_to_block_grid(y_plane, np)
     h, w = y.shape
     by, bx = h // 8, w // 8
@@ -61,6 +83,9 @@ def block_maps(y_plane: Any, np: Any) -> Tuple[Any, Any]:
 
 
 def plot_heatmap(ax: Any, data: Any, title: str, cmap: str) -> None:
+    """
+    Render a heatmap with colorbar and axis labels.
+    """
     im = ax.imshow(data, cmap=cmap, aspect="auto")
     ax.set_title(title)
     ax.set_xlabel("Block X")
@@ -69,6 +94,9 @@ def plot_heatmap(ax: Any, data: Any, title: str, cmap: str) -> None:
 
 
 def write_dc_heatmap(input_path: str, out_path: str, debug: bool) -> Tuple[int, int]:
+    """
+    Write a DC coefficient heatmap and return block grid dimensions.
+    """
     np, plt, image_module = dct_deps()
     t0 = time.perf_counter()
     y = load_luma(input_path, np, image_module)
@@ -85,6 +113,9 @@ def write_dc_heatmap(input_path: str, out_path: str, debug: bool) -> Tuple[int, 
 
 
 def write_ac_energy_heatmap(input_path: str, out_path: str, debug: bool) -> Tuple[int, int]:
+    """
+    Write an AC energy heatmap and return block grid dimensions.
+    """
     np, plt, image_module = dct_deps()
     t0 = time.perf_counter()
     y = load_luma(input_path, np, image_module)

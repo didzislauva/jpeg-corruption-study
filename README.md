@@ -25,11 +25,14 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 
 3. **Mutates bytes in the entropy stream**
    - Supports arithmetic changes (`add1`, `sub1`)
+   - Supports direct replacement (`ff`, `00`)
    - Supports bit-flip modes (`bitflip:0,1,3`, `bitflip:msb`, `bitflip:lsb`)
    - Supports full byte inversion (`flipall`)
+   - Optional overflow wrapping for `add1`/`sub1` (`--overflow-wrap`)
    - Supports two application strategies:
      - `independent` (default): each output starts from the original JPEG
      - `cumulative`: output `N` contains all prior mutations plus one new random offset
+     - `sequential`: output `N` contains all prior mutations plus the next sequential bytes
    - Supports repeated cumulative experiment sets (`--repeats`)
 
 4. **Monte Carlo sampling**
@@ -64,6 +67,7 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 - `matplotlib`, `numpy`, and `scikit-image` only if you use `--ssim-chart`
 - `matplotlib` and `numpy` if you use `--wave-chart` or `--sliding-wave-chart`
 - `Pillow`, `matplotlib`, and `numpy` if you use `--dc-heatmap` or `--ac-energy-heatmap`
+- `textual` if you use the fullscreen TUI (`--tui` / `--gui`)
 - `pytest` only if you run tests
 
 Install Pillow if needed:
@@ -90,6 +94,12 @@ Install test dependency if needed:
 python3 -m pip install pytest
 ```
 
+Install TUI dependency if needed:
+
+```bash
+python3 -m pip install textual
+```
+
 ## Usage
 
 ### Basic report only
@@ -97,6 +107,46 @@ python3 -m pip install pytest
 ```bash
 ./jpg_fault_tolerance.py gradient.jpg --report-only
 ```
+
+## Tools
+
+### Insert custom APPn segment
+
+Use the helper CLI to insert a custom APPn segment with a payload.
+
+```bash
+./jpg_fault_tools.py insert-appn gradient.jpg --appn 15 --payload-hex "4D 59 54 41 47 00 01 02 03"
+```
+
+Add an identifier prefix:
+
+```bash
+./jpg_fault_tools.py insert-appn gradient.jpg --appn 15 --identifier "MYTAG\\0" --payload-hex "01 02 03"
+```
+
+Use a binary payload file:
+
+```bash
+./jpg_fault_tools.py insert-appn gradient.jpg --appn 2 --payload-file payload.bin -o out_with_app2.jpg
+```
+
+### Fullscreen TUI
+
+```bash
+./jpg_fault_tolerance.py --tui
+```
+
+The TUI includes:
+- File browser with JPEG-only list
+- Info tab with segment list, decoded details, entropy ranges
+- APP0 editor (simple fields + advanced raw hex) with live preview and save
+- Tools tab with a custom APPn writer
+
+## TUI Notes
+
+- Info → Segments includes health checks with OK/WARN/FAIL and reasons.
+- Info → APP0 shows decoded fields with color-matched hex preview.
+- APP0 editor updates the preview live and writes a new file on save.
 
 ### Generate mutations
 
@@ -110,10 +160,19 @@ python3 -m pip install pytest
 ./jpg_fault_tolerance.py gradient.jpg --mutate add1
 ./jpg_fault_tolerance.py gradient.jpg --mutate sub1
 ./jpg_fault_tolerance.py gradient.jpg --mutate flipall
+./jpg_fault_tolerance.py gradient.jpg --mutate ff
+./jpg_fault_tolerance.py gradient.jpg --mutate 00
 ./jpg_fault_tolerance.py gradient.jpg --mutate bitflip:0
 ./jpg_fault_tolerance.py gradient.jpg --mutate bitflip:0,1,3
 ./jpg_fault_tolerance.py gradient.jpg --mutate bitflip:msb
 ./jpg_fault_tolerance.py gradient.jpg --mutate bitflip:lsb
+```
+
+Overflow wrap for arithmetic mutations:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg --mutate add1 --overflow-wrap
+./jpg_fault_tolerance.py gradient.jpg --mutate sub1 --overflow-wrap
 ```
 
 ### Choose mutation application strategy
@@ -134,6 +193,12 @@ Set how many new bytes are added per cumulative image:
 
 ```bash
 ./jpg_fault_tolerance.py gradient.jpg --mutation-apply cumulative --sample 100 --step 2 --seed 42
+```
+
+Sequential (step N contains all previous mutations + the next sequential bytes):
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg --mutation-apply sequential --sample 100 --step 2 --seed 42
 ```
 
 ### Repeat cumulative experiment sets
@@ -177,12 +242,15 @@ Use all entropy offsets:
 
 - `independent`: number of random byte offsets to mutate (per offset, one or more files may be created depending on `--mutate`)
 - `cumulative`: number of cumulative output steps/images
+- `sequential`: number of sequential output steps/images
 
 In cumulative mode, `sample * step` must not exceed the number of mutable entropy bytes.
+In sequential mode, `sample * step` must not exceed the number of mutable entropy bytes.
 
 `--step` meaning:
 
 - `cumulative`: number of newly mutated entropy bytes added per image
+- `sequential`: number of newly mutated entropy bytes added per image
 - default: `1`
 - total requested mutated offsets per set is `sample * step`
 - example: `--sample 100 --step 2` gives 100 images, with cumulative mutations `2, 4, 6, ... 200`
@@ -191,6 +259,7 @@ In cumulative mode, `sample * step` must not exceed the number of mutable entrop
 `--repeats` meaning:
 
 - `cumulative`: number of repeated cumulative sets
+- `sequential`: number of repeated sequential sets
 - `independent`: must stay at default `1`
 
 ### Output directory
@@ -369,6 +438,8 @@ And filenames include set id:
 <basename>_set_<SET>_cum_<STEP>_step_<STEP_SIZE>_off_<LAST_OFFSET>_orig_<LAST_ORIG>_new_<LAST_NEW>_mut_<TAG>.jpg
 ```
 
+Sequential mode uses the same naming pattern as cumulative mode.
+
 ## Explicit Generation Examples
 
 Example 1: cumulative steps only
@@ -439,6 +510,12 @@ Example 6: generate SSIM + PSNR + MSE + MAE charts with one command
 
 ```bash
 ./jpg_fault_tolerance.py gradient.jpg --mutation-apply cumulative --sample 100 --step 2 --repeats 10 --seed 42 --metrics ssim,psnr,mse,mae --metrics-chart-prefix out_metrics --jobs 4
+```
+
+Example 7: sequential mutations with overflow wrap
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg --mutation-apply sequential --mutate add1 --overflow-wrap --sample 50 --step 2 --seed 7 -o out_seq
 ```
 
 ## How Segment Lengths Are Determined

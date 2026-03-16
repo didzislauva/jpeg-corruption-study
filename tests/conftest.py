@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""
+Shared pytest fixtures for JPEG fault tolerance tests.
+
+These fixtures provide small in-memory JPEGs and entropy ranges to keep tests
+fast and deterministic.
+"""
+
 import sys
 from pathlib import Path
 
@@ -14,6 +21,9 @@ from jpeg_fault.core.models import EntropyRange
 
 @pytest.fixture
 def tiny_jpeg_bytes() -> bytes:
+    """
+    Return a minimal JPEG byte sequence with one SOS and a short entropy stream.
+    """
     # SOI
     data = bytearray([0xFF, 0xD8])
 
@@ -42,6 +52,9 @@ def tiny_jpeg_bytes() -> bytes:
 
 @pytest.fixture
 def tiny_jpeg_path(tmp_path: Path, tiny_jpeg_bytes: bytes) -> Path:
+    """
+    Write tiny_jpeg_bytes to a temp path and return the file path.
+    """
     p = tmp_path / "tiny.jpg"
     p.write_bytes(tiny_jpeg_bytes)
     return p
@@ -49,4 +62,7 @@ def tiny_jpeg_path(tmp_path: Path, tiny_jpeg_bytes: bytes) -> Path:
 
 @pytest.fixture
 def simple_entropy_ranges() -> list[EntropyRange]:
+    """
+    Return a simple entropy range list for unit tests.
+    """
     return [EntropyRange(2, 8, 0)]

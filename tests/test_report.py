@@ -1,9 +1,16 @@
+"""
+Tests for report formatting and explanatory helpers.
+"""
+
 from jpeg_fault.core.jpeg_parse import parse_jpeg
 from jpeg_fault.core.models import EntropyRange, Segment
 from jpeg_fault.core import report as rp
 
 
 def test_segment_details_and_explainers(tiny_jpeg_bytes: bytes) -> None:
+    """
+    Validate detail extraction and explanation helpers for segments.
+    """
     segs, _ = parse_jpeg(tiny_jpeg_bytes)
     app0 = next(s for s in segs if s.name == "APP0")
     sos = next(s for s in segs if s.name == "SOS")
@@ -25,6 +32,9 @@ def test_segment_details_and_explainers(tiny_jpeg_bytes: bytes) -> None:
 
 
 def test_color_helpers() -> None:
+    """
+    Validate color mode decisions and ANSI colorization helper.
+    """
     assert rp.use_color("always") is True
     assert rp.use_color("never") is False
     assert rp.colorize("x", "green", False) == "x"
@@ -32,6 +42,9 @@ def test_color_helpers() -> None:
 
 
 def test_classify_and_head_formatting(tiny_jpeg_bytes: bytes) -> None:
+    """
+    Validate head byte classification and formatting.
+    """
     segs, _ = parse_jpeg(tiny_jpeg_bytes)
     labels = rp.classify_head_bytes(segs, 20)
     assert len(labels) == 20
@@ -40,6 +53,9 @@ def test_classify_and_head_formatting(tiny_jpeg_bytes: bytes) -> None:
 
 
 def test_segment_hex_parts_and_prints(capsys) -> None:
+    """
+    Validate hex segment formatting and printing helpers.
+    """
     seg = Segment(0xD8, 0, "SOI", None, None, None, 2)
     marker, length, payload, trunc = rp.segment_hex_parts(seg, bytes([0xFF, 0xD8]), 8)
     assert marker == "FF D8" and length == "" and payload == "" and trunc is False
@@ -51,6 +67,9 @@ def test_segment_hex_parts_and_prints(capsys) -> None:
 
 
 def test_entropy_ranges_and_full_report_output(capsys, tiny_jpeg_bytes: bytes) -> None:
+    """
+    Validate entropy range printing and full report output.
+    """
     segs, ents = parse_jpeg(tiny_jpeg_bytes)
     rp.print_entropy_ranges([EntropyRange(1, 3, 0)], False)
     assert "Scan 0" in capsys.readouterr().out

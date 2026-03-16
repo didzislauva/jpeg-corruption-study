@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+"""
+Tests for DCT-based heatmap utilities.
+"""
+
 from pathlib import Path
 
 import pytest
@@ -8,6 +12,9 @@ from jpeg_fault.core import dct_analysis as da
 
 
 def test_crop_and_block_maps_basic() -> None:
+    """
+    Validate block cropping and map shapes for a simple grid.
+    """
     np = pytest.importorskip("numpy")
 
     y = np.arange(16 * 16, dtype=np.float64).reshape(16, 16)
@@ -20,6 +27,9 @@ def test_crop_and_block_maps_basic() -> None:
 
 
 def test_small_image_rejected() -> None:
+    """
+    Ensure images too small for 8x8 DCT blocks are rejected.
+    """
     np = pytest.importorskip("numpy")
     y = np.zeros((7, 9), dtype=np.float64)
     with pytest.raises(RuntimeError):
@@ -27,6 +37,9 @@ def test_small_image_rejected() -> None:
 
 
 def test_write_heatmaps(tmp_path: Path) -> None:
+    """
+    Validate DC and AC heatmap outputs are written.
+    """
     pil = pytest.importorskip("PIL.Image")
     pytest.importorskip("numpy")
     pytest.importorskip("matplotlib")
@@ -46,6 +59,9 @@ def test_write_heatmaps(tmp_path: Path) -> None:
 
 
 def test_dct_deps_guard(monkeypatch) -> None:
+    """
+    Ensure dct_deps raises a helpful error when Pillow is missing.
+    """
     real_import = __import__
 
     def fake_import(name, *args, **kwargs):

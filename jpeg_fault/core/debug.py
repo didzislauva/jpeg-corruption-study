@@ -1,3 +1,7 @@
+"""
+Debug logging utilities and optional function instrumentation.
+"""
+
 import sys
 import time
 from functools import wraps
@@ -6,20 +10,32 @@ from typing import Any, Callable, Dict, Optional, Set
 _DEBUG_ENABLED = False
 
 def debug_log(enabled: bool, msg: str) -> None:
+    """
+    Print a debug message to stderr if enabled.
+    """
     if enabled:
         print(f"[DEBUG] {msg}", file=sys.stderr)
 
 
 def set_debug(enabled: bool) -> None:
+    """
+    Enable or disable global debug instrumentation.
+    """
     global _DEBUG_ENABLED
     _DEBUG_ENABLED = enabled
 
 
 def is_debug() -> bool:
+    """
+    Return the current global debug instrumentation state.
+    """
     return _DEBUG_ENABLED
 
 
 def _short_value(v: Any) -> str:
+    """
+    Compact, type-aware string representation for logging.
+    """
     if isinstance(v, bytes):
         return f"bytes(len={len(v)})"
     if isinstance(v, bytearray):
@@ -32,6 +48,9 @@ def _short_value(v: Any) -> str:
 
 
 def _summarize_call(args: tuple[Any, ...], kwargs: Dict[str, Any]) -> str:
+    """
+    Summarize positional and keyword arguments for debug logs.
+    """
     parts = [_short_value(a) for a in args[:4]]
     if len(args) > 4:
         parts.append(f"...+{len(args) - 4} args")
@@ -48,6 +67,12 @@ def instrument_module_functions(
     module_name: Optional[str] = None,
     exclude: Optional[Set[str]] = None,
 ) -> None:
+    """
+    Wrap functions in a module namespace with debug entry/exit logging.
+
+    This is an opt-in instrumentation helper, controlled by the global
+    debug flag via set_debug().
+    """
     excludes = set(exclude or set())
     mod = module_name or namespace.get("__name__", "")
     for name, obj in list(namespace.items()):

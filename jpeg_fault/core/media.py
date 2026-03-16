@@ -1,8 +1,15 @@
+"""
+GIF generation utilities for mutation outputs.
+"""
+
 import random
 from typing import Any, List
 
 
 def load_frames(paths: List[str], image_module: Any) -> List[Any]:
+    """
+    Load image frames from disk, converting each to RGB.
+    """
     frames: List[Any] = []
     for p in paths:
         try:
@@ -14,6 +21,11 @@ def load_frames(paths: List[str], image_module: Any) -> List[Any]:
 
 
 def write_gif(paths: List[str], out_path: str, fps: int, loop: int, seed: int, shuffle: bool) -> int:
+    """
+    Write a GIF from a list of image paths.
+
+    Returns the number of frames written. If no frames decode, returns 0.
+    """
     try:
         from PIL import Image
     except ImportError as e:

@@ -1,3 +1,7 @@
+"""
+Tests for GIF generation utilities.
+"""
+
 from pathlib import Path
 
 import pytest
@@ -6,6 +10,9 @@ from jpeg_fault.core import media
 
 
 class _FakeLoaded:
+    """
+    Fake image object to emulate a Pillow Image instance.
+    """
     def __init__(self, p: str) -> None:
         self.path = p
 
@@ -14,6 +21,9 @@ class _FakeLoaded:
 
 
 class _FakeImageModule:
+    """
+    Fake image module to simulate PIL.Image for load_frames testing.
+    """
     @staticmethod
     def open(path: str):
         if path.endswith("bad.jpg"):
@@ -22,11 +32,17 @@ class _FakeImageModule:
 
 
 def test_load_frames_skips_bad_entries() -> None:
+    """
+    Ensure load_frames skips unreadable files.
+    """
     frames = media.load_frames(["ok.jpg", "bad.jpg", "ok2.jpg"], _FakeImageModule)
     assert len(frames) == 2
 
 
 def test_write_gif_import_error_or_success(tmp_path: Path) -> None:
+    """
+    Verify write_gif behavior with and without Pillow.
+    """
     try:
         from PIL import Image
     except Exception:

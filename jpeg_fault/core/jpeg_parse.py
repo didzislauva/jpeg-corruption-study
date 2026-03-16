@@ -1,3 +1,12 @@
+"""
+JPEG parsing utilities for segment discovery and entropy range detection.
+
+This module provides:
+- Segment parsing with marker names and payload bounds.
+- Entropy-coded stream range extraction (after SOS).
+- Lightweight decoding of common segment payloads for reporting.
+"""
+
 from typing import Dict, List, Optional, Tuple
 
 from .models import EntropyRange, Segment
@@ -32,19 +41,33 @@ NO_LENGTH_MARKERS = {0xD8, 0xD9}
 
 
 def read_u16(be: bytes) -> int:
+    """
+    Read a big-endian 16-bit integer from a 2-byte slice.
+    """
     return (be[0] << 8) | be[1]
 
 
 def marker_name(marker: int) -> str:
+    """
+    Convert a marker byte to a friendly name if known, else hex string.
+    """
     return MARKER_NAMES.get(marker, f"0xFF{marker:02X}")
 
 
 def format_bytes(data: bytes, start: int, count: int) -> str:
+    """
+    Format a slice of bytes into a space-separated hex string.
+    """
     end = min(len(data), start + count)
     return " ".join(f"{b:02X}" for b in data[start:end])
 
 
 def next_marker_offset(data: bytes, start: int) -> int:
+    """
+    Scan forward for the next real marker, skipping stuffed bytes and restart markers.
+
+    Returns the offset of the 0xFF marker byte, or len(data) if none is found.
+    """
     j = start
     while j + 1 < len(data):
         if data[j] == 0xFF:
@@ -61,6 +84,14 @@ def next_marker_offset(data: bytes, start: int) -> int:
 
 
 def parse_segment(data: bytes, i: int) -> Tuple[Segment, int, Optional[EntropyRange]]:
+    """
+    Parse a single JPEG segment starting at offset `i`.
+
+    Returns:
+    - Segment object
+    - next offset to continue parsing
+    - optional EntropyRange if the segment is SOS
+    """
     if data[i] != 0xFF:
         raise ValueError(f"Expected marker at offset {i}, found 0x{data[i]:02X}")
 
@@ -99,6 +130,13 @@ def parse_segment(data: bytes, i: int) -> Tuple[Segment, int, Optional[EntropyRa
 
 
 def parse_jpeg(data: bytes) -> Tuple[List[Segment], List[EntropyRange]]:
+    """
+    Parse a JPEG byte stream into segments and entropy-coded ranges.
+
+    Returns:
+    - list of Segment objects in file order
+    - list of EntropyRange objects for each scan
+    """
     if len(data) < 2 or data[0] != 0xFF or data[1] != 0xD8:
         raise ValueError("Not a JPEG (missing SOI)")
 
@@ -122,8 +160,11 @@ def parse_jpeg(data: bytes) -> Tuple[List[Segment], List[EntropyRange]]:
 
 
 def decode_app0(payload: bytes) -> Optional[Dict[str, str]]:
+    """
+    Decode APP0 payload if it matches JFIF or JFXX signatures.
+    """
     if payload.startswith(b"JFIF\x00") and len(payload) >= 14:
-        ver = f"{payload[5]}.{payload[6]}"
+        ver = f"{payload[5]}.{payload[6]:02d}"
         units = payload[7]
         xden = read_u16(payload[8:10])
         yden = read_u16(payload[10:12])
@@ -140,6 +181,9 @@ def decode_app0(payload: bytes) -> Optional[Dict[str, str]]:
 
 
 def decode_dqt(payload: bytes) -> List[Dict[str, str]]:
+    """
+    Decode Define Quantization Table (DQT) payload into table summaries.
+    """
     tables: List[Dict[str, str]] = []
     i = 0
     while i < len(payload):
@@ -160,6 +204,9 @@ def decode_dqt(payload: bytes) -> List[Dict[str, str]]:
 
 
 def decode_dht(payload: bytes) -> List[Dict[str, str]]:
+    """
+    Decode Define Huffman Table (DHT) payload into table summaries.
+    """
     tables: List[Dict[str, str]] = []
     i = 0
     while i + 17 <= len(payload):
@@ -182,6 +229,9 @@ def decode_dht(payload: bytes) -> List[Dict[str, str]]:
 
 
 def decode_sof0(payload: bytes) -> Optional[Dict[str, str]]:
+    """
+    Decode baseline Start Of Frame (SOF0) payload into image geometry info.
+    """
     if len(payload) < 6:
         return None
     precision = payload[0]
@@ -197,6 +247,9 @@ def decode_sof0(payload: bytes) -> Optional[Dict[str, str]]:
 
 
 def decode_sos(payload: bytes) -> Optional[Dict[str, str]]:
+    """
+    Decode Start Of Scan (SOS) payload into component and spectral info.
+    """
     if len(payload) < 6:
         return None
     ns = payload[0]
@@ -215,6 +268,9 @@ def decode_sos(payload: bytes) -> Optional[Dict[str, str]]:
 
 
 def decode_dri(payload: bytes) -> Optional[Dict[str, str]]:
+    """
+    Decode Define Restart Interval (DRI) payload into a restart interval value.
+    """
     if len(payload) != 2:
         return None
     return {"restart_interval": str(read_u16(payload))}

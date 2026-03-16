@@ -1,3 +1,12 @@
+"""
+Metric computation and chart generation for mutation outputs.
+
+Supports SSIM, PSNR, MSE, and MAE. Charts are 3-panel outputs that show:
+- per-repetition lines
+- quantile summaries
+- decode success rate
+"""
+
 import os
 import re
 import time
@@ -8,6 +17,9 @@ from .debug import debug_log
 
 
 def analysis_deps(metric: str) -> Tuple[Any, Any, Any, Any]:
+    """
+    Load optional analysis dependencies for the requested metric.
+    """
     try:
         from PIL import Image
         import matplotlib.pyplot as plt
@@ -30,6 +42,9 @@ def analysis_deps(metric: str) -> Tuple[Any, Any, Any, Any]:
 
 
 def parse_metrics_list(spec: str) -> List[str]:
+    """
+    Parse a comma-separated metrics list.
+    """
     allowed = {"ssim", "psnr", "mse", "mae"}
     metrics: List[str] = []
     for part in spec.split(","):
@@ -45,6 +60,9 @@ def parse_metrics_list(spec: str) -> List[str]:
 
 
 def resolve_jobs(jobs_arg: Optional[int], debug: bool) -> int:
+    """
+    Resolve process worker count from a CLI argument.
+    """
     detected = os.cpu_count() or 1
     if jobs_arg is None:
         jobs = detected
@@ -57,6 +75,9 @@ def resolve_jobs(jobs_arg: Optional[int], debug: bool) -> int:
 
 
 def parse_cumulative_ids(path: str) -> Optional[Tuple[int, int, int]]:
+    """
+    Parse set id, step index, and step size from a cumulative output filename.
+    """
     name = os.path.basename(path)
     step_match = re.search(r"_cum_(\d+)_", name)
     if not step_match:
@@ -74,6 +95,9 @@ def parse_cumulative_ids(path: str) -> Optional[Tuple[int, int, int]]:
 
 
 def group_cumulative_paths(paths: List[str]) -> Tuple[List[int], List[int], int, Dict[Tuple[int, int], str]]:
+    """
+    Group cumulative file paths by set and step and validate step size consistency.
+    """
     set_ids: Set[int] = set()
     steps: Set[int] = set()
     step_sizes: Set[int] = set()
@@ -94,6 +118,9 @@ def group_cumulative_paths(paths: List[str]) -> Tuple[List[int], List[int], int,
 
 
 def load_rgb_array(path: str, ref_size: Tuple[int, int], np: Any, image_module: Any) -> Optional[Any]:
+    """
+    Load an image into an RGB numpy array, resizing to reference size.
+    """
     try:
         img = image_module.open(path).convert("RGB")
         if img.size != ref_size:
@@ -112,6 +139,9 @@ def score_for_path(
     image_module: Any,
     metric: str,
 ) -> Optional[float]:
+    """
+    Compute a metric score for a single path; returns None if decode fails.
+    """
     arr = load_rgb_array(path, ref_size, np, image_module)
     if arr is None:
         return None
@@ -139,6 +169,9 @@ _SSIM_METRIC: str = "ssim"
 
 
 def ssim_worker_init(input_path: str, metric: str) -> None:
+    """
+    Worker initializer for multiprocessing metric computation.
+    """
     global _SSIM_REF_ARR, _SSIM_REF_SIZE, _SSIM_NP, _SSIM_STRUCTURAL_SIMILARITY, _SSIM_IMAGE, _SSIM_METRIC
     from PIL import Image
     import numpy as np
@@ -157,6 +190,9 @@ def ssim_worker_init(input_path: str, metric: str) -> None:
 
 
 def ssim_worker_task(task: Tuple[int, int, str]) -> Tuple[int, int, Optional[float]]:
+    """
+    Worker task: compute score for a single (set, step, path).
+    """
     i, j, path = task
     if _SSIM_REF_SIZE is None:
         return i, j, None
@@ -186,6 +222,9 @@ def prepare_ssim_grid(
     lookup: Dict[Tuple[int, int], str],
     np: Any,
 ) -> Tuple[Any, Any, List[Tuple[int, int, str]]]:
+    """
+    Create empty score/presence matrices and a task list for scoring.
+    """
     scores = np.full((len(set_ids), len(steps)), np.nan, dtype=float)
     present = np.zeros((len(set_ids), len(steps)), dtype=bool)
     tasks: List[Tuple[int, int, str]] = []
@@ -208,6 +247,9 @@ def fill_scores_sequential(
     image_module: Any,
     metric: str,
 ) -> None:
+    """
+    Fill the score matrix sequentially in a single process.
+    """
     ref_img = image_module.open(input_path).convert("RGB")
     ref_size = ref_img.size
     ref_arr = np.asarray(ref_img, dtype=np.uint8)
@@ -227,6 +269,9 @@ def fill_scores_parallel(
     debug: bool,
     metric: str,
 ) -> None:
+    """
+    Fill the score matrix using multiprocessing.
+    """
     with ProcessPoolExecutor(
         max_workers=jobs, initializer=ssim_worker_init, initargs=(input_path, metric)
     ) as executor:
@@ -242,6 +287,9 @@ def fill_scores_parallel(
 
 
 def column_quantile(scores: Any, q: float, np: Any) -> Any:
+    """
+    Compute column-wise quantiles, ignoring NaN values.
+    """
     vals: List[float] = []
     for col in range(scores.shape[1]):
         col_vals = scores[:, col]
@@ -263,6 +311,9 @@ def build_ssim_matrices(
     debug: bool,
     metric: str,
 ) -> Tuple[List[int], List[int], List[int], Any, Any]:
+    """
+    Build the x-axis, score matrix, and presence matrix for charting.
+    """
     set_ids, steps, step_size, lookup = group_cumulative_paths(paths)
     debug_log(debug, f"{metric.upper()} input files: {len(paths)}")
     debug_log(debug, f"Cumulative files matched: {len(lookup)}")
@@ -288,6 +339,9 @@ def build_ssim_matrices(
 
 
 def plot_panel_a(ax: Any, x_values: List[int], set_ids: List[int], scores: Any, metric: str) -> None:
+    """
+    Panel A: plot each repetition line.
+    """
     for i, set_id in enumerate(set_ids):
         ax.plot(x_values, scores[i], linewidth=1.0, alpha=0.45, label=f"set {set_id:04d}")
     ax.set_title(f"A: {metric.upper()} Per Repetition")
@@ -301,6 +355,9 @@ def plot_panel_a(ax: Any, x_values: List[int], set_ids: List[int], scores: Any, 
 
 
 def plot_panel_b(ax: Any, x_values: List[int], scores: Any, np: Any, metric: str) -> None:
+    """
+    Panel B: plot quantile summary lines.
+    """
     q10 = column_quantile(scores, 0.10, np)
     q25 = column_quantile(scores, 0.25, np)
     q50 = column_quantile(scores, 0.50, np)
@@ -321,6 +378,9 @@ def plot_panel_b(ax: Any, x_values: List[int], scores: Any, np: Any, metric: str
 
 
 def plot_panel_c(ax: Any, x_values: List[int], scores: Any, present: Any, np: Any) -> None:
+    """
+    Panel C: plot decode success rate for each x position.
+    """
     available = present.sum(axis=0)
     decoded = np.isfinite(scores).sum(axis=0)
     rate = np.full(len(x_values), np.nan, dtype=float)
@@ -342,6 +402,9 @@ def write_metric_panels(
     debug: bool,
     metric: str,
 ) -> int:
+    """
+    Write a 3-panel metric chart and return the number of sets plotted.
+    """
     jobs = resolve_jobs(jobs_arg, debug)
     np, plt, structural_similarity, image_module = analysis_deps(metric)
     set_ids, steps, affected_bytes, scores, present = build_ssim_matrices(
@@ -375,4 +438,7 @@ def write_ssim_panels(
     jobs_arg: Optional[int],
     debug: bool,
 ) -> int:
+    """
+    SSIM-specific convenience wrapper for write_metric_panels.
+    """
     return write_metric_panels(input_path, paths, out_path, jobs_arg, debug, "ssim")

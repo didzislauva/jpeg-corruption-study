@@ -1,3 +1,10 @@
+"""
+Human-readable JPEG structure reporting with optional colorized output.
+
+This module formats the parsed JPEG segments and entropy ranges into a
+verbose report that explains segment meaning and shows hex previews.
+"""
+
 from typing import Dict, List, Tuple
 
 from .jpeg_parse import (
@@ -13,6 +20,9 @@ from .models import EntropyRange, Segment
 
 
 def segment_details(seg: Segment, data: bytes) -> List[str]:
+    """
+    Decode known segment payloads to produce human-readable details.
+    """
     details: List[str] = []
     if seg.length_field is None:
         return details
@@ -51,6 +61,9 @@ def segment_details(seg: Segment, data: bytes) -> List[str]:
 
 
 def explain_common(seg: Segment, actual: List[str]) -> List[str]:
+    """
+    Provide shared explanation lines for segment structure and length.
+    """
     lines: List[str] = []
     if seg.length_field is None:
         lines.append("Structure: FF marker")
@@ -66,6 +79,9 @@ def explain_common(seg: Segment, actual: List[str]) -> List[str]:
 
 
 def segment_intro_lines(seg_name: str) -> List[str]:
+    """
+    Introductory description of a segment type, based on its name.
+    """
     if seg_name == "SOI":
         return ["What it is: Start Of Image marker"]
     if seg_name == "EOI":
@@ -112,6 +128,9 @@ def segment_intro_lines(seg_name: str) -> List[str]:
 
 
 def explain_segment(seg: Segment, data: bytes) -> List[str]:
+    """
+    Build the full explanation for a segment, including decoded details.
+    """
     actual = segment_details(seg, data)
     lines: List[str] = segment_intro_lines(seg.name)
     lines.extend(explain_common(seg, actual))
@@ -119,6 +138,9 @@ def explain_segment(seg: Segment, data: bytes) -> List[str]:
 
 
 def use_color(mode: str) -> bool:
+    """
+    Decide whether to use ANSI colors based on the CLI color mode.
+    """
     if mode == "always":
         return True
     if mode == "never":
@@ -129,6 +151,9 @@ def use_color(mode: str) -> bool:
 
 
 def colorize(text: str, color: str, enabled: bool) -> str:
+    """
+    Apply an ANSI color code to text if colors are enabled.
+    """
     if not enabled:
         return text
     code = {
@@ -142,6 +167,9 @@ def colorize(text: str, color: str, enabled: bool) -> str:
 
 
 def classify_head_bytes(segments: List[Segment], head_len: int) -> List[str]:
+    """
+    Classify each byte in the file head as marker, length, payload, or other.
+    """
     labels = ["other"] * head_len
     for seg in segments:
         m_start = seg.offset
@@ -162,6 +190,9 @@ def classify_head_bytes(segments: List[Segment], head_len: int) -> List[str]:
 
 
 def format_head_colored(data: bytes, labels: List[str], colors: bool) -> str:
+    """
+    Format the file head as colored hex bytes using classification labels.
+    """
     parts: List[str] = []
     for i, b in enumerate(data[: len(labels)]):
         text = f"{b:02X}"
@@ -177,6 +208,9 @@ def format_head_colored(data: bytes, labels: List[str], colors: bool) -> str:
 
 
 def segment_hex_parts(seg: Segment, data: bytes, preview: int) -> Tuple[str, str, str, bool]:
+    """
+    Return hex strings for marker, length, and payload preview of a segment.
+    """
     marker = format_bytes(data, seg.offset, 2)
     if seg.length_field is None:
         return marker, "", "", False
@@ -190,6 +224,9 @@ def segment_hex_parts(seg: Segment, data: bytes, preview: int) -> Tuple[str, str
 
 
 def print_segment_header(seg: Segment, idx: int, colors: bool) -> None:
+    """
+    Print a summary line for a segment (offsets, marker, length, payload).
+    """
     marker_hex = f"FF{seg.marker:02X}"
     end_off = seg.offset + seg.total_length - 1
     header = (
@@ -206,6 +243,9 @@ def print_segment_header(seg: Segment, idx: int, colors: bool) -> None:
 
 
 def print_segment_hex(seg: Segment, data: bytes, colors: bool) -> None:
+    """
+    Print a formatted hex preview of a segment's marker/length/payload bytes.
+    """
     marker, length, payload, truncated = segment_hex_parts(seg, data, preview=16)
     if seg.length_field is None:
         label = colorize("  Hex:", "gray", colors)
@@ -221,6 +261,9 @@ def print_segment_hex(seg: Segment, data: bytes, colors: bool) -> None:
 
 
 def print_entropy_ranges(entropy_ranges: List[EntropyRange], colors: bool) -> None:
+    """
+    Print a summary of entropy-coded ranges found in the JPEG.
+    """
     if entropy_ranges:
         print(colorize("Entropy-coded data ranges:", "magenta", colors))
         for r in entropy_ranges:
@@ -236,6 +279,9 @@ def print_report(
     entropy_ranges: List[EntropyRange],
     color_mode: str,
 ) -> None:
+    """
+    Print the full JPEG report, including segment list and entropy ranges.
+    """
     colors = use_color(color_mode)
     print(colorize(f"File: {path}", "cyan", colors))
     print(f"Size: {len(data)} bytes")

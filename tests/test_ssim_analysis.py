@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+"""
+Tests for SSIM/metric analysis helpers and chart generation.
+"""
+
 from pathlib import Path
 
 import pytest
@@ -8,6 +12,9 @@ from jpeg_fault.core import ssim_analysis as sa
 
 
 def test_resolve_jobs_and_parse_grouping(capsys) -> None:
+    """
+    Validate job resolution, metric list parsing, and cumulative grouping.
+    """
     jobs = sa.resolve_jobs(None, debug=True)
     assert jobs >= 1
     err = capsys.readouterr().err
@@ -37,6 +44,9 @@ def test_resolve_jobs_and_parse_grouping(capsys) -> None:
 
 
 def test_group_cumulative_paths_rejects_mixed_step_sizes() -> None:
+    """
+    Ensure mixed step sizes across files are rejected.
+    """
     p1 = "/x/a_set_0001_cum_000001_step_001_off_x_mut_add1.jpg"
     p2 = "/x/a_set_0001_cum_000002_step_002_off_x_mut_add1.jpg"
     with pytest.raises(ValueError):
@@ -44,6 +54,9 @@ def test_group_cumulative_paths_rejects_mixed_step_sizes() -> None:
 
 
 def test_load_rgb_array_and_score_helpers(tmp_path: Path) -> None:
+    """
+    Validate image load and metric scoring helpers.
+    """
     pil = pytest.importorskip("PIL.Image")
     np = pytest.importorskip("numpy")
     sk = pytest.importorskip("skimage.metrics")
@@ -62,6 +75,9 @@ def test_load_rgb_array_and_score_helpers(tmp_path: Path) -> None:
 
 
 def test_prepare_grid_and_quantiles() -> None:
+    """
+    Validate grid preparation and quantile computations.
+    """
     np = pytest.importorskip("numpy")
 
     sets = [1, 2]
@@ -78,6 +94,9 @@ def test_prepare_grid_and_quantiles() -> None:
 
 
 def test_fill_scores_sequential(tmp_path: Path) -> None:
+    """
+    Validate sequential scoring path fills score matrix.
+    """
     pil = pytest.importorskip("PIL.Image")
     np = pytest.importorskip("numpy")
     sk = pytest.importorskip("skimage.metrics")
@@ -99,6 +118,9 @@ def test_fill_scores_sequential(tmp_path: Path) -> None:
 
 
 def test_worker_task_and_parallel_fill(monkeypatch) -> None:
+    """
+    Validate worker task behavior and parallel fill logic via monkeypatch.
+    """
     np = pytest.importorskip("numpy")
 
     # worker globals path
@@ -151,6 +173,9 @@ def test_worker_task_and_parallel_fill(monkeypatch) -> None:
 
 
 def test_build_matrices_and_plots_and_write(tmp_path: Path) -> None:
+    """
+    Validate matrix building, plot helpers, and chart writers.
+    """
     pil = pytest.importorskip("PIL.Image")
     np = pytest.importorskip("numpy")
     sk = pytest.importorskip("skimage.metrics")
@@ -195,6 +220,9 @@ def test_build_matrices_and_plots_and_write(tmp_path: Path) -> None:
 
 
 def test_analysis_deps_import_guard() -> None:
+    """
+    Ensure analysis_deps raises helpful errors when deps are missing.
+    """
     try:
         deps = sa.analysis_deps("ssim")
     except RuntimeError as e:
