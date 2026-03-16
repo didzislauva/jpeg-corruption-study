@@ -61,6 +61,73 @@ def tiny_jpeg_path(tmp_path: Path, tiny_jpeg_bytes: bytes) -> Path:
 
 
 @pytest.fixture
+def rich_jpeg_bytes() -> bytes:
+    """
+    Return a synthetic JPEG with APP0, DQT, SOF0, DHT, DRI, SOS, and EOI.
+    """
+    data = bytearray([0xFF, 0xD8])
+
+    app0_payload = bytes([
+        0x4A, 0x46, 0x49, 0x46, 0x00,
+        0x01, 0x02,
+        0x01,
+        0x00, 0x48,
+        0x00, 0x48,
+        0x00, 0x00,
+    ])
+    data.extend([0xFF, 0xE0, 0x00, 0x10])
+    data.extend(app0_payload)
+
+    dqt_payload = bytes([0x00] + list(range(1, 65)))
+    data.extend([0xFF, 0xDB, 0x00, 0x43])
+    data.extend(dqt_payload)
+
+    sof0_payload = bytes([
+        0x08,
+        0x00, 0x08,
+        0x00, 0x08,
+        0x03,
+        0x01, 0x22, 0x00,
+        0x02, 0x11, 0x00,
+        0x03, 0x11, 0x00,
+    ])
+    data.extend([0xFF, 0xC0, 0x00, 0x11])
+    data.extend(sof0_payload)
+
+    dht_payload = bytes(
+        [0x00] + [0, 1] + [0] * 14 + [0x00] +
+        [0x10] + [0, 2] + [0] * 14 + [0x00, 0xF0]
+    )
+    data.extend([0xFF, 0xC4, 0x00, 0x27])
+    data.extend(dht_payload)
+
+    data.extend([0xFF, 0xDD, 0x00, 0x04, 0x00, 0x04])
+
+    sos_payload = bytes([
+        0x03,
+        0x01, 0x00,
+        0x02, 0x10,
+        0x03, 0x10,
+        0x00, 0x3F, 0x00,
+    ])
+    data.extend([0xFF, 0xDA, 0x00, 0x0C])
+    data.extend(sos_payload)
+    data.extend([0x11, 0x22, 0xFF, 0xD0, 0x33, 0x44, 0x55])
+    data.extend([0xFF, 0xD9])
+    return bytes(data)
+
+
+@pytest.fixture
+def rich_jpeg_path(tmp_path: Path, rich_jpeg_bytes: bytes) -> Path:
+    """
+    Write rich_jpeg_bytes to a temp path and return the file path.
+    """
+    p = tmp_path / "rich.jpg"
+    p.write_bytes(rich_jpeg_bytes)
+    return p
+
+
+@pytest.fixture
 def simple_entropy_ranges() -> list[EntropyRange]:
     """
     Return a simple entropy range list for unit tests.

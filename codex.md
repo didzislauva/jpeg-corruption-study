@@ -43,7 +43,7 @@ For a given input JPEG, the tool can do all of the following:
 
 ## Current Entry Point
 
-- [jpg_fault_tolerance.py](/home/didzis/Projects/jpeg_corruption_study/jpg_fault_tolerance.py)
+- [jpg_fault_tolerance.py](/home/didzis/Projects/jpgInvestigation/jpg_fault_tolerance.py)
 
 This file is intentionally thin. It just imports and runs:
 
@@ -56,36 +56,36 @@ All real logic lives under:
 
 ## Current Module Layout
 
-- [cli.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/cli.py)
+- [cli.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/cli.py)
   Main CLI, argument parsing, orchestration, mode switching, phase execution.
 
-- [models.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/models.py)
+- [models.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/models.py)
   Shared dataclasses:
   - `Segment`
   - `EntropyRange`
 
-- [jpeg_parse.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/jpeg_parse.py)
+- [jpeg_parse.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/jpeg_parse.py)
   Low-level JPEG parsing and segment decoding helpers.
 
-- [report.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/report.py)
+- [report.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/report.py)
   Human-readable segment reporting and colored terminal formatting.
 
-- [mutate.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/mutate.py)
+- [mutate.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/mutate.py)
   Mutation selection, mutation application, cumulative set handling, output naming.
 
-- [media.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/media.py)
+- [media.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/media.py)
   GIF generation from generated mutation files.
 
-- [ssim_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/ssim_analysis.py)
+- [ssim_analysis.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/ssim_analysis.py)
   Metric computation and chart generation for cumulative mutation outputs.
 
-- [wave_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/wave_analysis.py)
+- [wave_analysis.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/wave_analysis.py)
   Entropy stream wave charts and sliding-window stream statistics.
 
-- [dct_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/dct_analysis.py)
+- [dct_analysis.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/dct_analysis.py)
   `8x8` block DCT-based visual analysis on decoded source image luminance.
 
-- [debug.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/debug.py)
+- [debug.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/debug.py)
   Minimal debug logger.
 
 
@@ -93,7 +93,7 @@ All real logic lives under:
 
 ### `Segment`
 
-Defined in [models.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/models.py).
+Defined in [models.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/models.py).
 
 Fields:
 
@@ -112,7 +112,7 @@ Meaning:
 
 ### `EntropyRange`
 
-Defined in [models.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/models.py).
+Defined in [models.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/models.py).
 
 Fields:
 
@@ -130,7 +130,7 @@ Meaning:
 
 ## JPEG Parsing Behavior
 
-Implemented primarily in [jpeg_parse.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/jpeg_parse.py).
+Implemented primarily in [jpeg_parse.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/jpeg_parse.py).
 
 ### Supported parsing model
 
@@ -181,7 +181,7 @@ This decoding is descriptive only. It is not used to re-encode JPEG data.
 
 ## Human Report Behavior
 
-Implemented in [report.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/report.py).
+Implemented in [report.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/report.py).
 
 The report prints:
 
@@ -213,7 +213,7 @@ Color modes:
 
 ## Mutation System
 
-Implemented in [mutate.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/mutate.py).
+Implemented in [mutate.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/mutate.py).
 
 ### Mutation modes
 
@@ -402,7 +402,7 @@ Alias:
 
 ## Randomness Model
 
-Implemented in [mutate.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/mutate.py).
+Implemented in [mutate.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/mutate.py).
 
 ### Independent mode randomness
 
@@ -488,7 +488,7 @@ Important detail:
 
 ## Source-Only vs Mutation-Dependent Modes
 
-Implemented in [cli.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/cli.py).
+Implemented in [cli.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/cli.py).
 
 The CLI distinguishes between:
 
@@ -522,7 +522,7 @@ This behavior was added intentionally to avoid unnecessary work for entropy-stre
 
 ## GIF Generation
 
-Implemented in [media.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/media.py).
+Implemented in [media.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/media.py).
 
 Behavior:
 
@@ -540,7 +540,7 @@ If no mutation images decode:
 
 ## Metric Analysis: SSIM, PSNR, MSE, MAE
 
-Implemented in [ssim_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/ssim_analysis.py).
+Implemented in [ssim_analysis.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/ssim_analysis.py).
 
 ### Metrics supported
 
@@ -627,7 +627,7 @@ That behavior is currently known and should be interpreted carefully.
 
 ## Entropy Stream Wave Analysis
 
-Implemented in [wave_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/wave_analysis.py).
+Implemented in [wave_analysis.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/wave_analysis.py).
 
 These analyses operate on the concatenated entropy-coded bytes from all scans.
 
@@ -675,7 +675,7 @@ It is **not** JPEG symbol entropy after Huffman decoding.
 
 ## DCT-Based Heatmaps
 
-Implemented in [dct_analysis.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/dct_analysis.py).
+Implemented in [dct_analysis.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/dct_analysis.py).
 
 These are source-image analyses, not direct bitstream decoders.
 
@@ -721,7 +721,7 @@ This is a simple block-level texture/detail energy measure.
 
 ## Debug Logging
 
-Implemented in [debug.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/debug.py).
+Implemented in [debug.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/debug.py).
 
 Current philosophy:
 
@@ -752,7 +752,7 @@ Enabled by:
 
 ## CLI Behavior Summary
 
-Implemented in [cli.py](/home/didzis/Projects/jpeg_corruption_study/jpeg_fault/core/cli.py).
+Implemented in [cli.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/cli.py).
 
 ### Main execution order
 
@@ -794,6 +794,7 @@ The project includes a Textual fullscreen TUI:
 - Launch with `./jpg_fault_tolerance.py --tui` (alias `--gui`)
 - Left menu: Input/Info/Tools/Mutation/Strategy/Outputs/Run
 - File browser shows directories; a JPEG-only list is shown for selection
+- Selecting a JPEG auto-loads Info views and updates the preview
 
 ### Info Tabs
 
@@ -802,6 +803,12 @@ The project includes a Textual fullscreen TUI:
 - Details: per-segment explanations
 - Entropy: scan ranges
 - APP0: decoded fields + colorized hex view
+- SOF0: frame-header workspace with frame/components/tables/edit views
+- DRI: restart-interval workspace with summary/effect/edit views
+- APPn: per-segment subtabs for APP1 (EXIF) and APP2 (ICC)
+- DHT: per-segment Huffman-table workspaces with bytes/info, counts, symbols, usage, codes, and edit views
+- DQT: per-segment quantization-table workspaces with bytes/info, grid, zigzag, stats, usage, heatmap, and edit views
+- Hex: full-file hex view with segment coloring and clickable legend
 
 ### Segment Health Checks
 
@@ -816,6 +823,14 @@ The project includes a Textual fullscreen TUI:
 - Manual length toggle (dangerous): allows length field mismatch
 - Live preview updates decoded + hex view on edit
 - Saves a new file (`*_app0_edit.jpg`)
+
+### SOF0 / DRI / DHT / DQT Editors
+
+- SOF0 has a dedicated frame-header workspace with structured/raw editing and live preview.
+- DRI has a dedicated restart-interval workspace with structured/raw editing and live preview.
+- DHT has a dedicated Huffman-table workspace with structured/raw editing and canonical-code/usage views.
+- DQT has a dedicated quantization-table workspace with structured/raw editing, grid/zigzag/stats/usage/heatmap views.
+- DHT and DQT keep the active editor stable while typing; raw/structured editor content syncs when switching modes.
 
 ### Tools Tab
 
@@ -856,8 +871,14 @@ Implementation:
 - New mutation modes: `ff`, `00`, and overflow wrapping for `add1/sub1`.
 - Textual TUI is the primary interactive UI (`--tui`), with:
   - File browser + JPEG-only list
-  - Info tabs (General/Segments/Details/Entropy/APP0)
+  - Live preview panel with dimensions/size
+  - Info tabs (General/Segments/Details/Entropy/APP0/SOF0/DRI/APPn/DHT/DQT/Hex)
   - APP0 editor (simple + advanced, live preview, save new file)
+  - SOF0 workspace/editor
+  - DRI workspace/editor
+  - DHT workspace/editor
+  - DQT workspace/editor
+  - APP1 EXIF decoder/editor and APP2 ICC decoder/editor
   - Tools tab with APPn writer
 - API layer (`jpeg_fault/core/api.py`) is the stable integration surface for UI layers.
 - Function size guideline: keep functions ≤ 60 lines; refactor as needed.
@@ -922,16 +943,16 @@ Current test suite lives under:
 
 Key files:
 
-- [test_cli.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_cli.py)
-- [test_mutate.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_mutate.py)
-- [test_jpeg_parse.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_jpeg_parse.py)
-- [test_report.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_report.py)
-- [test_media.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_media.py)
-- [test_ssim_analysis.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_ssim_analysis.py)
-- [test_wave_analysis.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_wave_analysis.py)
-- [test_dct_analysis.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_dct_analysis.py)
-- [test_models_debug.py](/home/didzis/Projects/jpeg_corruption_study/tests/test_models_debug.py)
-- [conftest.py](/home/didzis/Projects/jpeg_corruption_study/tests/conftest.py)
+- [test_cli.py](/home/didzis/Projects/jpgInvestigation/tests/test_cli.py)
+- [test_mutate.py](/home/didzis/Projects/jpgInvestigation/tests/test_mutate.py)
+- [test_jpeg_parse.py](/home/didzis/Projects/jpgInvestigation/tests/test_jpeg_parse.py)
+- [test_report.py](/home/didzis/Projects/jpgInvestigation/tests/test_report.py)
+- [test_media.py](/home/didzis/Projects/jpgInvestigation/tests/test_media.py)
+- [test_ssim_analysis.py](/home/didzis/Projects/jpgInvestigation/tests/test_ssim_analysis.py)
+- [test_wave_analysis.py](/home/didzis/Projects/jpgInvestigation/tests/test_wave_analysis.py)
+- [test_dct_analysis.py](/home/didzis/Projects/jpgInvestigation/tests/test_dct_analysis.py)
+- [test_models_debug.py](/home/didzis/Projects/jpgInvestigation/tests/test_models_debug.py)
+- [conftest.py](/home/didzis/Projects/jpgInvestigation/tests/conftest.py)
 
 ### What tests cover
 

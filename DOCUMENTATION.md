@@ -69,6 +69,7 @@ Functions:
 - `parse_jpeg(data: bytes) -> Tuple[List[Segment], List[EntropyRange]]`: Parses full JPEG, returning ordered segments and entropy ranges.
 - `decode_app0(payload: bytes) -> Optional[Dict[str, str]]`: Decodes JFIF/JFXX headers.
 - `decode_dqt(payload: bytes) -> List[Dict[str, str]]`: Parses quantization tables.
+- `decode_dqt_tables(payload: bytes) -> List[Dict[str, object]]`: Parses full quantization tables (id, precision, values).
 - `decode_dht(payload: bytes) -> List[Dict[str, str]]`: Parses Huffman tables.
 - `decode_sof0(payload: bytes) -> Optional[Dict[str, str]]`: Parses baseline frame header.
 - `decode_sos(payload: bytes) -> Optional[Dict[str, str]]`: Parses scan header parameters.
@@ -308,13 +309,16 @@ Functions:
 
 Features:
 - Left menu for Input/Info/Tools/Mutation/Strategy/Outputs/Run.
-- File browser with JPEG-only list.
-- Info tab with segment list, details, entropy, APP0 decoding and editing.
+- File browser with JPEG-only list and live preview (ASCII thumbnail + metadata).
+- Info tab with segment list, details, entropy, full-hex view, and APP0/SOF0/DRI/APPn/DHT/DQT decoding.
 - Tools tab with APPn insertion helper.
 
 Notable behavior:
 - Info → Segments includes health checks with OK/WARN/FAIL and reasons.
 - APP0 editor supports simple fields and advanced raw hex, with live preview.
+- SOF0, DRI, DHT, and DQT editors all provide live byte-level preview updates.
+- DHT and DQT avoid rewriting the active editor while typing; raw/structured views sync when mode changes.
+- Selecting a JPEG auto-loads Info tabs for immediate inspection.
 
 ### Info Tab Details
 - **General**: file size, segment count, scan count, total entropy bytes.
@@ -322,6 +326,12 @@ Notable behavior:
 - **Details**: expanded per-segment explanations (from `report.explain_segment`).
 - **Entropy**: entropy ranges per scan.
 - **APP0**: decoded fields, legend, and colorized hex dump.
+- **SOF0**: frame-header workspace with bytes/info plus frame/components/tables/edit views.
+- **DRI**: restart-interval workspace with bytes/info plus summary/effect/edit views.
+- **APPn**: per-segment subtabs for APP1/APP2 decoding (others are read-only).
+- **DHT**: per-segment workspaces with bytes/info plus table/counts/symbols/usage/codes/edit views.
+- **DQT**: per-segment workspaces with bytes/info plus grid/zigzag/stats/usage/heatmap/edit views.
+- **Hex**: full-file hex view with segment coloring and clickable legend.
 
 ### Segment Health Checks
 The TUI computes a health status for each segment:
@@ -350,6 +360,38 @@ Modes:
 Behavior:
 - Live preview updates the decoded and hex views on every change.
 - Save writes a new file `*_app0_edit.jpg` (or `_app0_edit_N.jpg` if needed).
+
+### SOF0 Workspace (Info → SOF0)
+- Left side shows segment structure, decoded frame geometry, component summaries, and colorized bytes.
+- Right side provides Frame, Components, Tables, and Edit tabs.
+- Edit supports structured frame-header fields or raw payload hex with live preview and save-as-new-file.
+
+### DRI Workspace (Info → DRI)
+- Left side shows segment structure, decoded restart interval, and colorized bytes.
+- Right side provides Summary, Effect, and Edit tabs.
+- Edit supports structured restart-interval fields or raw payload hex with live preview and save-as-new-file.
+
+### APPn Decoder (Info → APPn)
+- APPn tab groups APP0/APP1/APP2/APP13/APP14/etc. into subtabs.
+- APP1: EXIF-aware views with raw hex, annotated hex, table view, and edit tabs for headers/IFDs.
+- APP2: ICC profile decoder with header, tag table, and editable tag payloads.
+
+### DHT Decoder (Info → DHT)
+- One workspace per DHT segment.
+- Left side shows segment structure, decoded summaries, and colorized bytes.
+- Right side provides Tables, Counts, Symbols, Usage, Codes, and Edit tabs.
+- Edit supports either structured Huffman-table dictionaries or raw payload hex.
+
+### DQT Decoder (Info → DQT)
+- One workspace per DQT segment.
+- Left side shows segment structure, decoded summaries, and colorized bytes.
+- Right side provides Grid, Zigzag, Stats, Usage, Heatmap, and Edit tabs.
+- Edit supports either structured natural-order table grids or raw payload hex.
+
+### Full Hex View (Info → Hex)
+- Shows 512 bytes per page with offset/hex/ASCII columns.
+- Segment coloring matches legend entries.
+- Legend entries are clickable to jump to the segment’s page.
 
 ### Tools Tab (APPn Writer)
 - Insert a custom APPn marker with payload hex or payload file.

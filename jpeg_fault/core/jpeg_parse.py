@@ -37,6 +37,17 @@ MARKER_NAMES = {
 for i in range(16):
     MARKER_NAMES[0xE0 + i] = f"APP{i}"
 
+JPEG_ZIGZAG_ORDER = [
+    0, 1, 5, 6, 14, 15, 27, 28,
+    2, 4, 7, 13, 16, 26, 29, 42,
+    3, 8, 12, 17, 25, 30, 41, 43,
+    9, 11, 18, 24, 31, 40, 44, 53,
+    10, 19, 23, 32, 39, 45, 52, 54,
+    20, 22, 33, 38, 46, 51, 55, 60,
+    21, 34, 37, 47, 50, 56, 59, 61,
+    35, 36, 48, 49, 57, 58, 62, 63,
+]
+
 NO_LENGTH_MARKERS = {0xD8, 0xD9}
 
 
@@ -203,6 +214,85 @@ def decode_dqt(payload: bytes) -> List[Dict[str, str]]:
     return tables
 
 
+def decode_dqt_tables(payload: bytes) -> List[Dict[str, object]]:
+    """
+    Decode DQT payload into full quantization tables.
+    """
+    tables: List[Dict[str, object]] = []
+    i = 0
+    while i < len(payload):
+        pq_tq = payload[i]
+        i += 1
+        precision = 16 if (pq_tq >> 4) else 8
+        table_id = pq_tq & 0x0F
+        size = 128 if precision == 16 else 64
+        if i + size > len(payload):
+            break
+        if precision == 8:
+            values = list(payload[i:i + 64])
+            i += 64
+        else:
+            values = []
+            for _ in range(64):
+                values.append(read_u16(payload[i:i + 2]))
+                i += 2
+        tables.append({
+            "id": table_id,
+            "precision_bits": precision,
+            "values": values,
+        })
+    return tables
+
+
+def dqt_values_to_natural_grid(values: List[int]) -> List[List[int]]:
+    """
+    Convert 64 DQT values from JPEG zigzag serialization into an 8x8 grid.
+    """
+    grid = [[0 for _ in range(8)] for _ in range(8)]
+    for idx, val in enumerate(values[:64]):
+        pos = JPEG_ZIGZAG_ORDER[idx]
+        row = pos // 8
+        col = pos % 8
+        grid[row][col] = val
+    return grid
+
+
+def dqt_natural_grid_to_values(grid: List[List[int]]) -> List[int]:
+    """
+    Convert an 8x8 natural-order DQT grid into JPEG zigzag serialization order.
+    """
+    flat = [val for row in grid for val in row][:64]
+    if len(flat) < 64:
+        flat.extend([0] * (64 - len(flat)))
+    return [flat[pos] for pos in JPEG_ZIGZAG_ORDER]
+
+
+def build_dqt_payload(tables: List[Dict[str, object]]) -> bytes:
+    """
+    Build a DQT payload from decoded table dictionaries.
+    """
+    payload = bytearray()
+    for table in tables:
+        table_id = int(table.get("id", 0))
+        precision = int(table.get("precision_bits", 8))
+        values = list(table.get("values", []))[:64]
+        if len(values) != 64:
+            raise ValueError("Each DQT table must contain exactly 64 values.")
+        pq = 1 if precision > 8 else 0
+        payload.append(((pq & 0x0F) << 4) | (table_id & 0x0F))
+        if pq == 0:
+            for value in values:
+                if value < 0 or value > 255:
+                    raise ValueError("8-bit DQT values must be 0..255.")
+                payload.append(value)
+            continue
+        for value in values:
+            if value < 0 or value > 65535:
+                raise ValueError("16-bit DQT values must be 0..65535.")
+            payload.extend(int(value).to_bytes(2, "big"))
+    return bytes(payload)
+
+
 def decode_dht(payload: bytes) -> List[Dict[str, str]]:
     """
     Decode Define Huffman Table (DHT) payload into table summaries.
@@ -228,6 +318,77 @@ def decode_dht(payload: bytes) -> List[Dict[str, str]]:
     return tables
 
 
+def decode_dht_tables(payload: bytes) -> List[Dict[str, object]]:
+    """
+    Decode DHT payload into full table data including counts, symbols, and codes.
+    """
+    tables: List[Dict[str, object]] = []
+    i = 0
+    while i + 17 <= len(payload):
+        tc_th = payload[i]
+        i += 1
+        tc = tc_th >> 4
+        th = tc_th & 0x0F
+        counts = list(payload[i:i + 16])
+        i += 16
+        total = sum(counts)
+        if i + total > len(payload):
+            break
+        symbols = list(payload[i:i + total])
+        i += total
+        # Rebuild canonical Huffman codes from the JPEG count histogram.
+        code = 0
+        codes: List[Dict[str, int]] = []
+        pos = 0
+        for length, count in enumerate(counts, start=1):
+            for _ in range(count):
+                if pos >= len(symbols):
+                    break
+                codes.append({
+                    "length": length,
+                    "code": code,
+                    "symbol": symbols[pos],
+                })
+                code += 1
+                pos += 1
+            code <<= 1
+        tables.append({
+            "class": "AC" if tc == 1 else "DC",
+            "id": th,
+            "counts": counts,
+            "symbols": symbols,
+            "codes": codes,
+        })
+    return tables
+
+
+def build_dht_payload(tables: List[Dict[str, object]]) -> bytes:
+    """
+    Build a DHT payload from decoded table dictionaries.
+    """
+    payload = bytearray()
+    for table in tables:
+        table_class = str(table.get("class", "DC")).upper()
+        tc = 1 if table_class == "AC" else 0
+        th = int(table.get("id", 0))
+        counts = [int(v) for v in list(table.get("counts", []))[:16]]
+        if len(counts) != 16:
+            raise ValueError("Each DHT table must contain exactly 16 count values.")
+        symbols = [int(v) for v in list(table.get("symbols", []))]
+        if sum(counts) != len(symbols):
+            raise ValueError("DHT symbol count must match the sum of counts.")
+        payload.append(((tc & 0x0F) << 4) | (th & 0x0F))
+        for count in counts:
+            if count < 0 or count > 255:
+                raise ValueError("DHT count values must be 0..255.")
+            payload.append(count)
+        for symbol in symbols:
+            if symbol < 0 or symbol > 255:
+                raise ValueError("DHT symbols must be 0..255.")
+            payload.append(symbol)
+    return bytes(payload)
+
+
 def decode_sof0(payload: bytes) -> Optional[Dict[str, str]]:
     """
     Decode baseline Start Of Frame (SOF0) payload into image geometry info.
@@ -244,6 +405,68 @@ def decode_sof0(payload: bytes) -> Optional[Dict[str, str]]:
         "height": str(height),
         "components": str(comps),
     }
+
+
+def decode_sof_components(payload: bytes) -> List[Dict[str, int]]:
+    """
+    Decode SOF component descriptors including quantization table assignment.
+    """
+    if len(payload) < 6:
+        return []
+    comps = payload[5]
+    needed = 6 + (3 * comps)
+    if len(payload) < needed:
+        return []
+    components: List[Dict[str, int]] = []
+    i = 6
+    for _ in range(comps):
+        comp_id = payload[i]
+        sampling = payload[i + 1]
+        components.append({
+            "id": comp_id,
+            "h_sampling": sampling >> 4,
+            "v_sampling": sampling & 0x0F,
+            "quant_table_id": payload[i + 2],
+        })
+        i += 3
+    return components
+
+
+def build_sof0_payload(
+    precision_bits: int,
+    width: int,
+    height: int,
+    components: List[Dict[str, int]],
+) -> bytes:
+    """
+    Build a baseline SOF0 payload from decoded frame fields.
+    """
+    if precision_bits < 0 or precision_bits > 255:
+        raise ValueError("SOF0 precision_bits must be 0..255.")
+    if width < 0 or width > 65535 or height < 0 or height > 65535:
+        raise ValueError("SOF0 width/height must be 0..65535.")
+    if len(components) > 255:
+        raise ValueError("SOF0 component count must be 0..255.")
+    payload = bytearray()
+    payload.append(int(precision_bits))
+    payload.extend(int(height).to_bytes(2, "big"))
+    payload.extend(int(width).to_bytes(2, "big"))
+    payload.append(len(components))
+    for comp in components:
+        comp_id = int(comp.get("id", 0))
+        h_sampling = int(comp.get("h_sampling", 1))
+        v_sampling = int(comp.get("v_sampling", 1))
+        quant_table_id = int(comp.get("quant_table_id", 0))
+        if not 0 <= comp_id <= 255:
+            raise ValueError("SOF0 component id must be 0..255.")
+        if not 0 <= h_sampling <= 15 or not 0 <= v_sampling <= 15:
+            raise ValueError("SOF0 sampling factors must be 0..15.")
+        if not 0 <= quant_table_id <= 255:
+            raise ValueError("SOF0 quant_table_id must be 0..255.")
+        payload.append(comp_id)
+        payload.append((h_sampling << 4) | v_sampling)
+        payload.append(quant_table_id)
+    return bytes(payload)
 
 
 def decode_sos(payload: bytes) -> Optional[Dict[str, str]]:
@@ -267,6 +490,30 @@ def decode_sos(payload: bytes) -> Optional[Dict[str, str]]:
     }
 
 
+def decode_sos_components(payload: bytes) -> List[Dict[str, int]]:
+    """
+    Decode SOS component selectors including DC/AC Huffman table ids.
+    """
+    if len(payload) < 6:
+        return []
+    ns = payload[0]
+    needed = 1 + (2 * ns) + 3
+    if len(payload) < needed:
+        return []
+    components: List[Dict[str, int]] = []
+    i = 1
+    for _ in range(ns):
+        comp_id = payload[i]
+        td_ta = payload[i + 1]
+        components.append({
+            "id": comp_id,
+            "dc_table_id": td_ta >> 4,
+            "ac_table_id": td_ta & 0x0F,
+        })
+        i += 2
+    return components
+
+
 def decode_dri(payload: bytes) -> Optional[Dict[str, str]]:
     """
     Decode Define Restart Interval (DRI) payload into a restart interval value.
@@ -274,3 +521,12 @@ def decode_dri(payload: bytes) -> Optional[Dict[str, str]]:
     if len(payload) != 2:
         return None
     return {"restart_interval": str(read_u16(payload))}
+
+
+def build_dri_payload(restart_interval: int) -> bytes:
+    """
+    Build a DRI payload from a restart interval value.
+    """
+    if restart_interval < 0 or restart_interval > 65535:
+        raise ValueError("DRI restart_interval must be 0..65535.")
+    return int(restart_interval).to_bytes(2, "big")

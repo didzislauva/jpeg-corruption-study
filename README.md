@@ -138,8 +138,16 @@ Use a binary payload file:
 
 The TUI includes:
 - File browser with JPEG-only list
-- Info tab with segment list, decoded details, entropy ranges
+- Input panel with live JPEG preview (ASCII thumbnail), dimensions, and size
+- Info tab with segment list, decoded details, entropy ranges, and full-hex view
 - APP0 editor (simple fields + advanced raw hex) with live preview and save
+- SOF0 tab with frame-header workspace: bytes/info on the left, frame/components/tables/edit views on the right
+- DRI tab with restart-interval workspace: bytes/info on the left, summary/effect/edit views on the right
+- APPn tab with per-segment subtabs (APP1/APP2 decoded, others shown read-only)
+- DHT tab with per-segment workspaces: bytes/info on the left, table/counts/symbols/usage/codes/edit views on the right
+- APP1 EXIF decoder with annotated hex/raw/table views and editable headers/IFDs
+- APP2 ICC profile decoder with editable header/tags and live hex updates
+- DQT tab with per-segment workspaces: bytes/info on the left, grid/zigzag/stats/usage/heatmap/edit views on the right
 - Tools tab with a custom APPn writer
 
 ## TUI Notes
@@ -147,6 +155,16 @@ The TUI includes:
 - Info → Segments includes health checks with OK/WARN/FAIL and reasons.
 - Info → APP0 shows decoded fields with color-matched hex preview.
 - APP0 editor updates the preview live and writes a new file on save.
+- Info → SOF0 shows frame geometry, component sampling/table mapping, and editable frame-header payload views.
+- Info → DRI shows restart interval bytes, decoded effect, and editable payload views.
+- Info → APPn groups all APP segments and auto-selects the first available tab.
+- Info → DHT shows raw bytes plus table, counts, symbols, usage, canonical-code, and edit views per DHT segment.
+- Info → APP1 shows EXIF layout, offsets, and decoded IFDs alongside hex view.
+- Info → APP2 shows ICC header + tag table with structured decoding.
+- Info → DQT shows raw bytes plus natural-grid, zigzag, stats, usage, heatmap, and edit views per DQT segment.
+- Info → Hex provides a full-file hex view with segment coloring and a clickable legend.
+- Structured editors for SOF0, DRI, DHT, and DQT refresh the byte-level preview live.
+- DQT and DHT structured editors keep the active editor stable while typing; the alternate raw/structured editor syncs when switching modes.
 
 ### Generate mutations
 
@@ -547,7 +565,11 @@ SOI and EOI are always exactly 2 bytes and contain no length field.
 
 ## Notes On APP1
 
-APP1 typically contains **EXIF metadata**. This can be large (often thousands of bytes), which is why APP1 segments are often much bigger than APP0.
+APP1 typically contains **EXIF metadata**. This can be large (often thousands of bytes), which is why APP1 segments are often much bigger than APP0. The TUI decodes EXIF headers, TIFF layout, IFD0/IFD1, and ExifIFD offsets, and renders annotated hex + table views.
+
+## Notes On APP2
+
+APP2 often contains an **ICC profile** (`ICC_PROFILE`). The TUI decodes the ICC header and tag table and can edit common tag payloads with live hex updates.
 
 ## Known Limitations
 
@@ -564,7 +586,6 @@ APP1 typically contains **EXIF metadata**. This can be large (often thousands of
 ## Roadmap Ideas
 
 - Add full Huffman table decoding (code lengths and values)
-- Decode and summarize EXIF tags from APP1
 - Add stratified sampling across multiple scans
 - Export a CSV index of all mutations
 

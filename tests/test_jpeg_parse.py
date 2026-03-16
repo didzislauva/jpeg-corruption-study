@@ -90,6 +90,9 @@ def test_parse_jpeg_and_decode_helpers(tiny_jpeg_bytes: bytes) -> None:
 
     dqt_payload = bytes([0x00] + [0] * 64)
     assert jp.decode_dqt(dqt_payload)[0]["bytes"] == "64"
+    dqt_full = jp.decode_dqt_tables(dqt_payload)
+    assert dqt_full[0]["precision_bits"] == 8
+    assert len(dqt_full[0]["values"]) == 64
 
     dht_payload = bytes([0x00] + [1] + [0] * 15 + [0x2A])
     dht = jp.decode_dht(dht_payload)
@@ -106,6 +109,104 @@ def test_parse_jpeg_and_decode_helpers(tiny_jpeg_bytes: bytes) -> None:
 
     assert jp.decode_dri(bytes([0, 7]))["restart_interval"] == "7"
     assert jp.decode_dri(bytes([0, 1, 2])) is None
+
+
+def test_dqt_values_to_natural_grid() -> None:
+    """
+    Ensure DQT values are remapped from zigzag serialization into 8x8 order.
+    """
+    grid = jp.dqt_values_to_natural_grid(list(range(64)))
+    assert grid[0] == [0, 1, 8, 16, 9, 2, 3, 10]
+    assert grid[1] == [17, 24, 32, 25, 18, 11, 4, 5]
+    assert grid[7] == [53, 60, 61, 54, 47, 55, 62, 63]
+
+
+def test_dqt_payload_roundtrip_and_sof_components() -> None:
+    """
+    Validate DQT payload rebuilding and SOF component-table mapping helpers.
+    """
+    original_tables = [{"id": 0, "precision_bits": 8, "values": list(range(64))}]
+    payload = jp.build_dqt_payload(original_tables)
+    decoded = jp.decode_dqt_tables(payload)
+    assert decoded == original_tables
+
+    grid = jp.dqt_values_to_natural_grid(original_tables[0]["values"])
+    assert jp.dqt_natural_grid_to_values(grid) == original_tables[0]["values"]
+
+    sof_payload = bytes([
+        8, 0, 2, 0, 3, 3,
+        1, 0x22, 0,
+        2, 0x11, 1,
+        3, 0x11, 1,
+    ])
+    components = jp.decode_sof_components(sof_payload)
+    assert components == [
+        {"id": 1, "h_sampling": 2, "v_sampling": 2, "quant_table_id": 0},
+        {"id": 2, "h_sampling": 1, "v_sampling": 1, "quant_table_id": 1},
+        {"id": 3, "h_sampling": 1, "v_sampling": 1, "quant_table_id": 1},
+    ]
+
+
+def test_dht_payload_roundtrip_and_sos_components() -> None:
+    """
+    Validate DHT payload rebuilding and SOS Huffman selector decoding helpers.
+    """
+    original_tables = [{
+        "class": "DC",
+        "id": 0,
+        "counts": [0, 1] + [0] * 14,
+        "symbols": [0x2A],
+    }]
+    payload = jp.build_dht_payload(original_tables)
+    decoded = jp.decode_dht_tables(payload)
+    assert decoded[0]["class"] == "DC"
+    assert decoded[0]["id"] == 0
+    assert decoded[0]["counts"] == original_tables[0]["counts"]
+    assert decoded[0]["symbols"] == original_tables[0]["symbols"]
+    assert decoded[0]["codes"] == [{"length": 2, "code": 0, "symbol": 0x2A}]
+
+    sos_payload = bytes([
+        3,
+        1, 0x00,
+        2, 0x11,
+        3, 0x11,
+        0, 63, 0,
+    ])
+    components = jp.decode_sos_components(sos_payload)
+    assert components == [
+        {"id": 1, "dc_table_id": 0, "ac_table_id": 0},
+        {"id": 2, "dc_table_id": 1, "ac_table_id": 1},
+        {"id": 3, "dc_table_id": 1, "ac_table_id": 1},
+    ]
+
+
+def test_sof0_payload_roundtrip() -> None:
+    """
+    Validate SOF0 payload rebuilding from geometry and component descriptors.
+    """
+    components = [
+        {"id": 1, "h_sampling": 2, "v_sampling": 2, "quant_table_id": 0},
+        {"id": 2, "h_sampling": 1, "v_sampling": 1, "quant_table_id": 1},
+        {"id": 3, "h_sampling": 1, "v_sampling": 1, "quant_table_id": 1},
+    ]
+    payload = jp.build_sof0_payload(8, 640, 480, components)
+    info = jp.decode_sof0(payload)
+    assert info == {
+        "precision_bits": "8",
+        "width": "640",
+        "height": "480",
+        "components": "3",
+    }
+    assert jp.decode_sof_components(payload) == components
+
+
+def test_dri_payload_roundtrip() -> None:
+    """
+    Validate DRI payload rebuilding from restart interval.
+    """
+    payload = jp.build_dri_payload(64)
+    assert payload == bytes([0x00, 0x40])
+    assert jp.decode_dri(payload) == {"restart_interval": "64"}
 
 
 def test_parse_jpeg_missing_soi() -> None:
