@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from jpeg_fault.core import analysis_registry as reg
-from jpeg_fault.core.analysis_types import AnalysisContext, AnalysisResult, AnalysisPlugin
+from jpeg_fault.core.analysis_types import AnalysisContext, AnalysisResult, AnalysisPlugin, PluginParamSpec
 
 
 @dataclass(frozen=True)
@@ -12,6 +12,7 @@ class DummyPlugin(AnalysisPlugin):
     label: str
     supported_formats: set[str]
     requires_mutations: bool = False
+    params_spec: tuple[PluginParamSpec, ...] = ()
 
     def run(self, input_path: str, context: AnalysisContext) -> AnalysisResult:
         return AnalysisResult(self.id, [])

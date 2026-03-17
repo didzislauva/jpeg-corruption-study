@@ -15,14 +15,15 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 from .analysis_registry import get_plugin, load_plugins
-from .analysis_types import AnalysisContext
+from .analysis_types import AnalysisContext, AnalysisResult, validate_plugin_params
 from .debug import debug_log
-from .dct_analysis import write_ac_energy_heatmap, write_dc_heatmap
 from .format_detect import detect_format
 from .jpeg_parse import parse_jpeg
 from .media import write_gif
 from .models import EntropyRange, Segment
 from .mutate import list_mutation_files, parse_mutation_mode, total_entropy_length, write_mutations
+from .mutation_registry import get_plugin as get_mutation_plugin, load_plugins as load_mutation_plugins
+from .mutation_types import MutationContext
 from .report import print_report
 from .ssim_analysis import parse_metrics_list, write_metric_panels, write_ssim_panels
 from .wave_analysis import write_sliding_wave_chart, write_wave_chart
@@ -55,6 +56,9 @@ class RunOptions:
     metrics_chart_prefix: Optional[str]
     jobs: Optional[int]
     analysis: str
+    analysis_params: List[str]
+    mutation_plugins: str
+    mutation_plugin_params: List[str]
     wave_chart: Optional[str]
     sliding_wave_chart: Optional[str]
     wave_window: int
@@ -73,6 +77,7 @@ class RunResult:
     ssim_sets: Optional[int]
     metric_sets: Dict[str, int]
     plugin_results: Dict[str, List[str]]
+    mutation_plugin_results: Dict[str, List[str]]
     wave_len: Optional[int]
     sliding_len: Optional[int]
     dc_blocks: Optional[Tuple[int, int]]
@@ -216,7 +221,18 @@ def run_wave_phase(args: RunOptions, data: bytes, entropy_ranges: List[EntropyRa
     Write a 2-panel wave chart of the entropy stream.
     """
     t0 = time.perf_counter()
-    stream_len = write_wave_chart(data, entropy_ranges, args.wave_chart, args.debug)
+    result = _run_analysis_plugin(
+        args=args,
+        plugin_id="entropy_wave",
+        mutation_count=0,
+        raw_param_map={"entropy_wave": {"out_path": str(args.wave_chart), "mode": "both"}},
+        data=data,
+        segments=[],
+        entropy_ranges=entropy_ranges,
+        mutation_paths=[],
+        fmt="jpeg",
+    )
+    stream_len = int((result.details or {}).get("stream_len", total_entropy_length(entropy_ranges)))
     debug_log(args.debug, f"Wave chart generation time: {time.perf_counter() - t0:.2f}s")
     return stream_len
 
@@ -226,9 +242,24 @@ def run_sliding_wave_phase(args: RunOptions, data: bytes, entropy_ranges: List[E
     Write a 3-panel sliding window chart over the entropy stream.
     """
     t0 = time.perf_counter()
-    stream_len = write_sliding_wave_chart(
-        data, entropy_ranges, args.sliding_wave_chart, args.wave_window, args.debug
+    result = _run_analysis_plugin(
+        args=args,
+        plugin_id="sliding_wave",
+        mutation_count=0,
+        raw_param_map={
+            "sliding_wave": {
+                "out_path": str(args.sliding_wave_chart),
+                "window": str(args.wave_window),
+                "stats": "mean,variance,entropy",
+            }
+        },
+        data=data,
+        segments=[],
+        entropy_ranges=entropy_ranges,
+        mutation_paths=[],
+        fmt="jpeg",
     )
+    stream_len = int((result.details or {}).get("stream_len", total_entropy_length(entropy_ranges)))
     debug_log(args.debug, f"Sliding wave chart generation time: {time.perf_counter() - t0:.2f}s")
     return stream_len
 
@@ -237,14 +268,46 @@ def run_dc_heatmap_phase(args: RunOptions) -> Tuple[int, int]:
     """
     Write a DC heatmap and return block grid dimensions.
     """
-    return write_dc_heatmap(args.input_path, args.dc_heatmap, args.debug)
+    t0 = time.perf_counter()
+    result = _run_analysis_plugin(
+        args=args,
+        plugin_id="dc_heatmap",
+        mutation_count=0,
+        raw_param_map={"dc_heatmap": {"out_path": str(args.dc_heatmap)}},
+        data=b"",
+        segments=[],
+        entropy_ranges=[],
+        mutation_paths=[],
+        fmt="jpeg",
+    )
+    details = result.details or {}
+    block_rows = int(details.get("block_rows", 0))
+    block_cols = int(details.get("block_cols", 0))
+    debug_log(args.debug, f"DC heatmap generation time: {time.perf_counter() - t0:.2f}s")
+    return block_rows, block_cols
 
 
 def run_ac_heatmap_phase(args: RunOptions) -> Tuple[int, int]:
     """
     Write an AC energy heatmap and return block grid dimensions.
     """
-    return write_ac_energy_heatmap(args.input_path, args.ac_energy_heatmap, args.debug)
+    t0 = time.perf_counter()
+    result = _run_analysis_plugin(
+        args=args,
+        plugin_id="ac_energy_heatmap",
+        mutation_count=0,
+        raw_param_map={"ac_energy_heatmap": {"out_path": str(args.ac_energy_heatmap)}},
+        data=b"",
+        segments=[],
+        entropy_ranges=[],
+        mutation_paths=[],
+        fmt="jpeg",
+    )
+    details = result.details or {}
+    block_rows = int(details.get("block_rows", 0))
+    block_cols = int(details.get("block_cols", 0))
+    debug_log(args.debug, f"AC heatmap generation time: {time.perf_counter() - t0:.2f}s")
+    return block_rows, block_cols
 
 
 def run(args: RunOptions, emit_report: bool = True) -> RunResult:
@@ -256,18 +319,19 @@ def run(args: RunOptions, emit_report: bool = True) -> RunResult:
     if emit_report:
         print_report(args.input_path, data, segments, entropy_ranges, args.color)
 
-    plugin_ids = _parse_analysis_list(args.analysis)
-    if args.report_only and not plugin_ids:
+    plugin_ids = _parse_plugin_list(args.analysis)
+    mutation_plugin_ids = _parse_plugin_list(args.mutation_plugins)
+    if args.report_only and not plugin_ids and not mutation_plugin_ids:
         return _empty_result()
 
     _validate_args_or_raise(args)
     source_only_mode = _is_source_only_mode(args)
 
-    mutation_count, gif_frames, ssim_sets, metric_sets = _maybe_run_mutations(
-        args, data, entropy_ranges, source_only_mode
+    mutation_count, created_paths, mutation_plugin_results, gif_frames, ssim_sets, metric_sets = _maybe_run_mutations(
+        args, data, segments, entropy_ranges, source_only_mode, mutation_plugin_ids
     )
     wave_len, sliding_len, dc_blocks, ac_blocks = _run_source_only(args, data, entropy_ranges)
-    plugin_results = _run_plugins(args, plugin_ids, mutation_count)
+    plugin_results = _run_plugins(args, plugin_ids, mutation_count, data, segments, entropy_ranges, created_paths)
 
     debug_log(args.debug, f"Total runtime: {time.perf_counter() - t_start:.2f}s")
     return RunResult(
@@ -276,6 +340,7 @@ def run(args: RunOptions, emit_report: bool = True) -> RunResult:
         ssim_sets=ssim_sets,
         metric_sets=metric_sets,
         plugin_results=plugin_results,
+        mutation_plugin_results=mutation_plugin_results,
         wave_len=wave_len,
         sliding_len=sliding_len,
         dc_blocks=dc_blocks,
@@ -305,6 +370,7 @@ def _empty_result() -> RunResult:
         ssim_sets=None,
         metric_sets={},
         plugin_results={},
+        mutation_plugin_results={},
         wave_len=None,
         sliding_len=None,
         dc_blocks=None,
@@ -326,35 +392,221 @@ def _is_source_only_mode(args: RunOptions) -> bool:
     """
     Determine if only source-only outputs are requested.
     """
-    mutation_dependent_outputs = bool(args.gif or args.ssim_chart or args.metrics_chart_prefix)
+    mutation_dependent_outputs = bool(
+        args.gif or args.ssim_chart or args.metrics_chart_prefix or args.mutation_plugins
+    )
     source_only_outputs = bool(
         args.wave_chart or args.sliding_wave_chart or args.dc_heatmap or args.ac_energy_heatmap
     )
     return source_only_outputs and not mutation_dependent_outputs
 
 
-def _parse_analysis_list(spec: str) -> List[str]:
+def _parse_plugin_list(spec: str) -> List[str]:
     if not spec:
         return []
     parts = [part.strip() for part in spec.split(",")]
     return [part for part in parts if part]
 
 
-def _run_plugins(args: RunOptions, plugin_ids: List[str], mutation_count: int) -> Dict[str, List[str]]:
+def _run_plugins(
+    args: RunOptions,
+    plugin_ids: List[str],
+    mutation_count: int,
+    data: Optional[bytes] = None,
+    segments: Optional[List[Segment]] = None,
+    entropy_ranges: Optional[List[EntropyRange]] = None,
+    mutation_paths: Optional[List[str]] = None,
+) -> Dict[str, List[str]]:
     if not plugin_ids:
         return {}
     load_plugins(debug=args.debug)
     fmt = detect_format(args.input_path)
-    context = AnalysisContext(output_dir=args.output_dir, debug=args.debug)
+    if data is None:
+        with open(args.input_path, "rb") as f:
+            data = f.read()
+    if fmt == "jpeg" and (segments is None or entropy_ranges is None):
+        segments, entropy_ranges = parse_jpeg(data)
+    if segments is None:
+        segments = []
+    if entropy_ranges is None:
+        entropy_ranges = []
+    if mutation_paths is None:
+        mutation_paths = []
+    raw_param_map = _parse_analysis_params(args.analysis_params)
+    extra = sorted(pid for pid in raw_param_map if pid not in plugin_ids)
+    if extra:
+        raise ValueError(f"Analysis params provided for unselected plugin(s): {', '.join(extra)}")
     results: Dict[str, List[str]] = {}
     for plugin_id in plugin_ids:
+        result = _run_analysis_plugin(
+            args=args,
+            plugin_id=plugin_id,
+            mutation_count=mutation_count,
+            raw_param_map=raw_param_map,
+            data=data,
+            segments=segments,
+            entropy_ranges=entropy_ranges,
+            mutation_paths=mutation_paths,
+            fmt=fmt,
+        )
+        results[plugin_id] = result.outputs
+    return results
+
+
+def _run_analysis_plugin(
+    *,
+    args: RunOptions,
+    plugin_id: str,
+    mutation_count: int,
+    raw_param_map: Dict[str, Dict[str, str]],
+    data: bytes,
+    segments: List[Segment],
+    entropy_ranges: List[EntropyRange],
+    mutation_paths: List[str],
+    fmt: Optional[str] = None,
+) -> AnalysisResult:
+    load_plugins(debug=args.debug)
+    resolved_fmt = fmt or detect_format(args.input_path)
+    plugin = get_plugin(plugin_id)
+    if plugin is None:
+        load_plugins(force=True, debug=args.debug)
         plugin = get_plugin(plugin_id)
+    if plugin is None:
+        raise ValueError(f"Unknown analysis plugin: {plugin_id}")
+    if resolved_fmt not in plugin.supported_formats:
+        raise ValueError(f"Plugin {plugin_id} does not support format {resolved_fmt}")
+    if plugin.requires_mutations and mutation_count == 0:
+        raise ValueError(f"Plugin {plugin_id} requires mutations, but none were generated.")
+    params = validate_plugin_params(plugin, raw_param_map.get(plugin_id))
+    context = _build_analysis_context(
+        plugin=plugin,
+        input_path=args.input_path,
+        fmt=resolved_fmt,
+        output_dir=args.output_dir,
+        debug=args.debug,
+        params=params,
+        data=data,
+        segments=segments,
+        entropy_ranges=entropy_ranges,
+        mutation_paths=mutation_paths,
+    )
+    return plugin.run(args.input_path, context)
+
+
+def _parse_analysis_params(entries: List[str]) -> Dict[str, Dict[str, str]]:
+    params: Dict[str, Dict[str, str]] = {}
+    for entry in entries:
+        plugin_key, sep, raw_value = entry.partition("=")
+        if not sep:
+            raise ValueError(f"Invalid analysis param {entry!r}; expected plugin.param=value")
+        plugin_id, dot, param_name = plugin_key.partition(".")
+        if not dot or not plugin_id or not param_name:
+            raise ValueError(f"Invalid analysis param {entry!r}; expected plugin.param=value")
+        plugin_params = params.setdefault(plugin_id, {})
+        if param_name in plugin_params:
+            raise ValueError(f"Duplicate analysis param for {plugin_id}.{param_name}")
+        plugin_params[param_name] = raw_value
+    return params
+
+
+def _build_analysis_context(
+    *,
+    plugin,
+    input_path: str,
+    fmt: str,
+    output_dir: str,
+    debug: bool,
+    params: Dict[str, object],
+    data: bytes,
+    segments: List[Segment],
+    entropy_ranges: List[EntropyRange],
+    mutation_paths: List[str],
+) -> AnalysisContext:
+    needs = set(getattr(plugin, "needs", frozenset()))
+    return AnalysisContext(
+        input_path=input_path,
+        format=fmt,
+        output_dir=output_dir,
+        debug=debug,
+        params=params,
+        source_bytes=data if "source_bytes" in needs else None,
+        segments=segments if "parsed_jpeg" in needs else None,
+        entropy_ranges=entropy_ranges if "entropy_ranges" in needs else None,
+        decoded_image=_decode_image(input_path) if "decoded_image" in needs else None,
+        mutation_paths=mutation_paths if "mutation_outputs" in needs else None,
+    )
+
+
+def _build_mutation_context(
+    *,
+    plugin,
+    input_path: str,
+    fmt: str,
+    output_dir: str,
+    debug: bool,
+    params: Dict[str, object],
+    data: bytes,
+    segments: List[Segment],
+    entropy_ranges: List[EntropyRange],
+) -> MutationContext:
+    needs = set(getattr(plugin, "needs", frozenset()))
+    return MutationContext(
+        input_path=input_path,
+        format=fmt,
+        output_dir=output_dir,
+        debug=debug,
+        params=params,
+        source_bytes=data if "source_bytes" in needs else None,
+        segments=segments if "parsed_jpeg" in needs else None,
+        entropy_ranges=entropy_ranges if "entropy_ranges" in needs else None,
+    )
+
+
+def _decode_image(input_path: str):
+    try:
+        from PIL import Image
+    except ImportError as e:
+        raise RuntimeError(
+            "Plugin requires decoded_image but Pillow is not installed. "
+            "Install with: python3 -m pip install pillow"
+        ) from e
+    return Image.open(input_path).convert("RGB")
+
+
+def _run_mutation_plugins(
+    args: RunOptions,
+    plugin_ids: List[str],
+    data: bytes,
+    segments: List[Segment],
+    entropy_ranges: List[EntropyRange],
+) -> Dict[str, List[str]]:
+    if not plugin_ids:
+        return {}
+    load_mutation_plugins(debug=args.debug)
+    fmt = detect_format(args.input_path)
+    raw_param_map = _parse_analysis_params(args.mutation_plugin_params)
+    extra = sorted(pid for pid in raw_param_map if pid not in plugin_ids)
+    if extra:
+        raise ValueError(f"Mutation plugin params provided for unselected plugin(s): {', '.join(extra)}")
+    results: Dict[str, List[str]] = {}
+    for plugin_id in plugin_ids:
+        plugin = get_mutation_plugin(plugin_id)
         if plugin is None:
-            raise ValueError(f"Unknown analysis plugin: {plugin_id}")
+            raise ValueError(f"Unknown mutation plugin: {plugin_id}")
         if fmt not in plugin.supported_formats:
-            raise ValueError(f"Plugin {plugin_id} does not support format {fmt}")
-        if plugin.requires_mutations and mutation_count == 0:
-            raise ValueError(f"Plugin {plugin_id} requires mutations, but none were generated.")
+            raise ValueError(f"Mutation plugin {plugin_id} does not support format {fmt}")
+        params = validate_plugin_params(plugin, raw_param_map.get(plugin_id))
+        context = _build_mutation_context(
+            plugin=plugin,
+            input_path=args.input_path,
+            fmt=fmt,
+            output_dir=args.output_dir,
+            debug=args.debug,
+            params=params,
+            data=data,
+            segments=segments,
+            entropy_ranges=entropy_ranges,
+        )
         result = plugin.run(args.input_path, context)
         results[plugin_id] = result.outputs
     return results
@@ -363,29 +615,34 @@ def _run_plugins(args: RunOptions, plugin_ids: List[str], mutation_count: int) -
 def _maybe_run_mutations(
     args: RunOptions,
     data: bytes,
+    segments: List[Segment],
     entropy_ranges: List[EntropyRange],
     source_only_mode: bool,
-) -> Tuple[int, Optional[int], Optional[int], Dict[str, int]]:
+    mutation_plugin_ids: List[str],
+) -> Tuple[int, List[str], Dict[str, List[str]], Optional[int], Optional[int], Dict[str, int]]:
     """
     Run mutations and mutation-dependent analyses if needed.
     """
     if source_only_mode:
         debug_log(args.debug, "Source-only analysis mode: skipping mutation generation.")
-        return 0, None, None, {}
+        return 0, [], {}, None, None, {}
 
     mode, bits = parse_mutation_mode(args.mutate)
     base_name = os.path.splitext(os.path.basename(args.input_path))[0]
     before_paths = set(list_mutation_files(args.output_dir, base_name))
-    mutation_count = run_mutation_phase(args, data, entropy_ranges, base_name, mode, bits)
+    builtin_mutation_count = run_mutation_phase(args, data, entropy_ranges, base_name, mode, bits)
     created_paths = new_mutation_paths(args.output_dir, base_name, before_paths)
     if not created_paths:
         created_paths = list_mutation_files(args.output_dir, base_name)
+    mutation_plugin_results = _run_mutation_plugins(args, mutation_plugin_ids, data, segments, entropy_ranges)
+    plugin_paths = sorted({path for outputs in mutation_plugin_results.values() for path in outputs})
+    created_paths = sorted(set(created_paths) | set(plugin_paths))
     debug_log(args.debug, f"Mutation files considered for post-processing: {len(created_paths)}")
 
     gif_frames = run_gif_phase_for_paths(args, created_paths) if args.gif else None
     ssim_sets = run_ssim_phase_for_paths(args, created_paths) if args.ssim_chart else None
     metric_sets = run_metrics_phase_for_paths(args, created_paths) if args.metrics_chart_prefix else {}
-    return mutation_count, gif_frames, ssim_sets, metric_sets
+    return builtin_mutation_count + len(plugin_paths), created_paths, mutation_plugin_results, gif_frames, ssim_sets, metric_sets
 
 
 def _run_source_only(

@@ -1,67 +1,59 @@
 # Refactor Suggestions For Next Codex Session
 
-You are working in `/home/didzis/Projects/jpgInvestigation`.
+You are working in `jpeg_corruption_study`.
 
-Your goal in this session is not to add another feature first. Your goal is to improve the codebase structure so future feature work becomes faster, safer, and less repetitive.
-
-Focus on modularity, quality, less repetition, and better orchestration.
+Your goal in this session is still structural improvement first, not feature growth first. The difference from earlier sessions is that some of the original refactor work has already been done, so this note focuses on what is still actually worth doing now.
 
 ## Current Situation
 
-The repository has a good high-level split in `jpeg_fault/core/`:
+The repository already has a decent high-level split in `jpeg_fault/core/`:
 
-- `jpeg_parse.py` for parsing and payload decode helpers
+- `jpeg_parse.py` for parsing and payload encode/decode helpers
 - `report.py` for textual JPEG reporting
 - `mutate.py` for entropy-byte mutation logic
 - `api.py` for orchestration
 - `cli.py` for CLI wiring
 - `tui_app.py` plus TUI mixin modules for the Textual UI
 
-Recent fixes completed:
+Recent baseline that should be preserved:
 
-- Plugin menu insertion now matches the real `ListView` API.
-- Plugin panel initialization now respects Textual's widget lifecycle.
+- Plugin menu insertion matches the real `ListView` API.
+- Plugin panel initialization respects Textual's widget lifecycle.
 - Chart-producing analyses force matplotlib to `Agg`, preventing TUI-thread Tk crashes.
-- Current automated baseline is `88 passed` via `../env/bin/pytest`.
+- The repo currently passes `94` tests via `../env/bin/pytest -q`.
+- The wave-analysis path is now plugin-first: `--wave-chart` and `--sliding-wave-chart` dispatch through `entropy_wave` and `sliding_wave` internally.
+- `entropy_wave` supports `mode`, `transform`, and optional CSV export.
+- `sliding_wave` supports `window`, `stats`, `transform`, and optional CSV export.
+- Behavior, architecture, and workflow changes should always be reflected in the relevant Markdown docs in the same session.
 
-The main structural problem is now the combined TUI surface:
+## What Changed Since The Earlier Refactor Note
 
-- `jpeg_fault/core/tui_app.py`
-- `jpeg_fault/core/tui_segments_basic.py`
-- `jpeg_fault/core/tui_segments_tables.py`
-- `jpeg_fault/core/tui_segments_appn.py`
+Some of the earlier suggestions are no longer aspirational; they are already partly implemented.
 
-These files are still large and have grown by copy-adaptation:
+These shared helpers now exist in `tui_app.py` and should be treated as the baseline abstraction layer:
 
-- APP0 has its own editor/workflow
-- APP1 and APP2 have their own editor/workflow
-- SOF0 has its own editor/workflow
-- DRI has its own editor/workflow
-- DHT has its own editor/workflow
-- DQT has its own editor/workflow
+- shared manual-length parsing
+- shared edited-file writing
+- shared save logging
+- shared preview refresh for single-segment editors
+- shared preview refresh for keyed/multi-segment editors
+- shared structured-to-raw and raw-to-structured mode sync helpers
 
-Those workspaces are useful and correct, but they repeat the same lifecycle patterns many times:
+That means the biggest problem is no longer "everything is duplicated equally." The actual remaining issue is uneven adoption of those helpers across the TUI code.
 
-- build pane
-- init tabs
-- render left panel
-- render right tabs
-- parse structured editor
-- parse raw editor
-- sync mode switch
-- preview updated payload
-- manual length handling
-- save inputs
-- write new file
-- save log / warning
+The plugin architecture also changed meaningfully:
 
-This repetition is now the biggest maintainability risk in the repo.
+- analysis plugins now declare typed params and explicit host-data needs
+- mutation plugins now have a separate family/registry
+- built-in wave analyses have already been migrated onto the plugin execution path
+
+That means the next session should not spend time redesigning plugin basics again unless a real blocker appears.
 
 ## Primary Objective
 
-Refactor the TUI so it becomes a composition of reusable workspace helpers instead of one giant hand-wired file.
+Continue the TUI refactor by moving the remaining bespoke editors and save/preview flows onto the shared helper patterns that already exist.
 
-Do this without changing the visible behavior unless the refactor exposes a clear bug.
+Do this without changing visible behavior unless the refactor exposes a real bug.
 
 Preserve:
 
@@ -70,267 +62,152 @@ Preserve:
 - current TUI features
 - current save-as-new-file behavior
 - current live preview behavior
+- current plugin lifecycle behavior
+- current headless matplotlib behavior
+
+## What Is Still True
+
+The TUI is still the main maintainability risk.
+
+These files are still large and still cost too much context to edit safely:
+
+- `jpeg_fault/core/tui_app.py`
+- `jpeg_fault/core/tui_segments_basic.py`
+- `jpeg_fault/core/tui_segments_tables.py`
+- `jpeg_fault/core/tui_segments_appn.py`
+
+APP1 and APP2 are still more custom than the SOF0/DRI/DQT editors.
+
+DHT is only partially on the shared path because its preview flow still has a lenient raw-hex fallback that is not expressed through the generic keyed preview helper.
+
+TUI test coverage is better than before, but it is still mostly fake-widget and unit-style coverage rather than true runtime-heavy Textual coverage.
 
 ## Constraints
 
 - Follow the project’s 60-line function guideline where practical.
 - Keep behavior stable unless a bug must be fixed.
-- Prefer extracting helpers and small abstractions over large framework rewrites.
-- Avoid introducing abstract patterns that are more complex than the duplicated code they replace.
+- Prefer extracting small helpers over introducing a new framework.
+- Avoid abstractions that are more complex than the repeated code they replace.
 - Use `apply_patch` for edits.
-- Run tests with `../env/bin/pytest`.
+- Run tests with `../env/bin/pytest` when tests are requested or when the change materially affects behavior.
+- Update the relevant Markdown docs whenever the code changes meaningfully.
 
-## What To Improve
+## Recommended Work
 
-### 1. Introduce a Generic Segment Workspace Pattern In The TUI
+### 1. Finish Normalizing Segment Editor Mechanics
 
-Create a reusable internal pattern for “segment workspace with left bytes/info and right tabs”.
+The main remaining target is to make APP1, APP2, and DHT look more like the already-refactored SOF0/DRI/DQT flows.
 
-Candidate abstraction:
+Focus on:
 
-- a small dataclass or protocol-like structure describing a workspace
-- helper methods for:
-  - creating the split layout
-  - creating tab sets
-  - resolving widget ids from a workspace key
-  - common save / preview / manual-length logic
+- common input-path validation
+- common segment-loaded validation
+- common edited-file writing
+- common save logging
+- common preview refresh structure
 
-The repeated workspaces that should move toward this pattern:
+The goal is not to force every editor into the exact same mold. The goal is to eliminate avoidable plumbing differences.
 
-- SOF0
-- DRI
-- DHT
-- DQT
+### 2. Extract A Shared Helper For APPn Write Flows
 
-APP0 can remain somewhat custom because it has a richer field editor, but even APP0 can probably reuse some shared save/preview helpers later.
+APP1 and APP2 still each rebuild output files manually.
 
-### 2. Separate “Editor Mechanics” From “Segment Semantics”
+That should probably become a shared helper that handles:
 
-Right now, `tui.py` mixes:
+- lookup of segment offset and total length
+- marker preservation
+- replacement segment assembly
+- collision-safe output naming
 
-- widget plumbing
-- structured payload parsing
-- payload serialization
-- preview update logic
-- file write logic
+SOF0/DRI/DQT/DHT already lean on a common file-writing helper. APP1/APP2 should move in that direction unless there is a concrete reason not to.
 
-Split these responsibilities.
+### 3. Unify DHT Preview Logic If Possible
 
-Suggested direction:
+DHT still has a partially custom preview path because it supports lenient recovery when the raw hex editor is temporarily invalid while typing.
 
-- keep segment-specific payload encode/decode in `jpeg_parse.py` or a new helper module
-- keep UI state transitions in `tui.py`
-- extract generic editor mechanics into helper methods or a new TUI support module
+That behavior is useful and should not be removed casually.
 
-Examples of mechanics that should be centralized:
+But the current structure should be revisited to see whether the generic keyed preview helper can support:
 
-- raw vs structured mode visibility
-- manual length handling
-- save button dirty-state toggling
-- preview refresh flow
-- save target file naming pattern
+- strict mode
+- lenient preview mode with warning text
 
-### 3. Reduce Duplication In Save / Preview Flows
+If that can be done cleanly, DHT can stop being a special case.
 
-The following patterns are repeated for SOF0 / DRI / DHT / DQT:
+### 4. Reduce Size Pressure In `tui_segments_appn.py`
 
-- `_build_*_payload`
-- `_*_length_from_ui`
-- `_refresh_*_preview`
-- `_*_save_inputs`
-- `_*_write_file`
-- `_*_save_log`
+`tui_segments_appn.py` remains one of the heaviest modules.
 
-These should become a shared segment-editor flow with only segment-specific payload builders and panel renderers swapped in.
+Before adding more APPn features, consider extracting focused helpers for:
 
-Possible shape:
+- EXIF dict parsing and validation
+- ICC tag update collection
+- ICC profile rebuild logic
+- APP1/APP2 file-save plumbing
 
-- one generic helper that:
-  - reads current payload from segment-specific builder
-  - computes manual or automatic length
-  - re-renders preview
-  - handles save
+Do not split blindly. Extract only where the helper becomes easier to test and easier to reason about than the inlined version.
 
-Keep the abstraction simple.
+### 5. Improve Internal Grouping In The TUI Modules
 
-Do not build a massive inheritance hierarchy.
+The TUI mixins are split, but related methods are still spread out enough that maintenance is expensive.
 
-### 4. Introduce Shared “Structured Editor <-> Raw Hex” Sync Helpers
-
-The current DHT/DQT mode-switch sync behavior is correct, but the implementation is still repeated and easy to drift.
-
-Create one shared helper for:
-
-- switching from structured view to raw hex
-- switching from raw hex to structured view
-- explicitly avoiding rewriting the active editor while typing
-
-The only variable should be:
-
-- structured -> payload function
-- payload -> structured function
-
-### 5. Improve Internal Naming And Grouping In `tui.py`
-
-The TUI file would benefit from clearer sections grouped by responsibility.
-
-Suggested ordering:
+Prefer grouping methods in this order where practical:
 
 1. widget construction
-2. info-tab initialization
-3. file browser / input loading
-4. generic TUI helpers
-5. APP0 workspace
-6. SOF0 workspace
-7. DRI workspace
-8. APP1 / APP2 workspaces
-9. DHT workspace
-10. DQT workspace
-11. hex view
-12. save / preview utilities
+2. tab initialization
+3. render helpers
+4. payload parse/serialize helpers
+5. preview/update helpers
+6. save helpers
+7. event handlers
 
-Right now related methods are spread out enough that it costs too much context to make safe edits.
+This matters because the next engineer should be able to find the full workflow for one editor without jumping around the file excessively.
 
-### 6. Keep The TUI Split Coherent
+### 6. Keep Pushing Encode/Decode Logic Out Of The TUI
 
-The old `tui.py` split has already happened. The next step is to make the split cleaner internally, not to split again blindly.
+`jpeg_parse.py` already acts as more than a parser; it is also a lightweight payload encode/decode layer for editable segments.
 
-Current split targets already in place:
+Continue leaning into that when it reduces UI complexity.
 
-- `tui_app.py` for `JpegFaultTui`
-- `tui_segments_basic.py` for APP0/SOF0/DRI
-- `tui_segments_tables.py` for DHT/DQT
-- `tui_segments_appn.py` for APP1/APP2
-- `tui_hex.py` for full hex pane
+Good candidates:
 
-What still matters:
+- more normalization helpers for APP1/APP2 payload structures
+- validation helpers that are currently embedded directly in TUI event paths
 
-- reduce coupling between `tui_app.py` and mixins
-- move more common mechanics out of per-segment code
-- avoid growing test-only compatibility hacks into the main flow
+Bad candidates:
 
-### 7. Add Better Parser-Level Structures For Segment Editors
+- moving UI-specific state transitions into parser code
 
-`jpeg_parse.py` is already evolving into a useful encode/decode layer.
+### 7. Add Higher-Value TUI Tests
 
-Keep leaning into that.
+The current tests cover many helper flows, but the next testing gains are probably in behavior-oriented integration checks rather than more fake-widget plumbing tests.
 
-Potential improvements:
+Good targets:
 
-- add lightweight typed dicts or dataclasses for decoded payloads
-- replace generic `Dict[str, object]` where practical in new code
-- centralize roundtrip helpers:
-  - DQT decode/build
-  - DHT decode/build
-  - SOF0 decode/build
-  - DRI decode/build
+- mode switch behavior under invalid editor states
+- save flow for APP1/APP2 after refactors
+- plugin panel behavior with real-ish widget lifecycles
+- end-to-end preview/save behavior for more than one segment type in one session
 
-This will reduce TUI-side dict juggling.
+## What Not To Spend Time On First
 
-### 8. Improve Test Structure For TUI Behaviors
+- Do not re-split the TUI modules again unless a very clear seam appears.
+- Do not rewrite the plugin system just because it exists; it is not the main bottleneck right now.
+- Do not change CLI behavior unless explicitly requested.
+- Do not add a new feature first if the same session could remove a chunk of structural duplication instead.
 
-There is now real TUI-oriented coverage, but the tests rely on fake widgets and direct method calls.
+## Practical Next Step
 
-That is acceptable, but improve the structure:
+If starting a refactor session from this note, the best next move is usually:
 
-- centralize fake widget classes into test helpers
-- centralize widget-map builders for workspaces
-- reduce boilerplate in `tests/test_tui_segments.py`
+1. inspect APP1/APP2 save and preview flows
+2. decide whether they can adopt the existing shared file-write/save-log helpers
+3. see whether DHT lenient preview can be folded into the keyed preview helper
+4. add or update tests around those changes before moving on
 
-Possible new helper file:
+If starting a plugin-migration session instead, the best next move is usually:
 
-- `tests/tui_test_helpers.py`
-
-Add clearer categories in tests:
-
-- render tests
-- preview tests
-- mode-switch sync tests
-- save tests
-- validation tests
-- missing-segment tests
-
-### 9. Review Repetition In Parser And Report Layers Too
-
-The parser and report layers are much healthier than the TUI, but still inspect for easy wins:
-
-- repeated marker/payload slicing
-- repeated segment summary formatting
-- repeated “decode if payload exists” patterns
-
-Only refactor these if it is clearly helpful.
-
-The TUI is still the main target.
-
-### 10. Preserve User-Facing Documentation Accuracy
-
-After refactoring, update all relevant Markdown docs if behavior or internal organization changes:
-
-- `README.md`
-- `DOCUMENTATION.md`
-- `codex.md`
-- `prompt.md`
-
-Keep them aligned with actual code.
-
-## Suggested Next Session Focus
-
-Do not spend the next session re-fixing the plugin/Tk crash unless it reproduces again with a new traceback. That specific problem has been addressed.
-
-The best next work is:
-
-1. Extract more shared editor/save/preview mechanics from the TUI segment mixins.
-2. Add a few more plugin panels or analysis actions now that the plugin shell is stable.
-3. Add stronger runtime-oriented TUI tests where possible, especially around plugin execution and panel switching.
-
-## Concrete Deliverables
-
-Aim to finish with:
-
-1. noticeably smaller and better-organized `tui.py`, or a justified split into smaller TUI modules
-2. shared helpers removing obvious repetition across SOF0/DRI/DHT/DQT
-3. no visible regression in current TUI behavior
-4. cleaner tests with less widget boilerplate
-5. updated docs if necessary
-6. full test pass
-
-## Recommended Execution Order
-
-1. Map repeated TUI workspace patterns.
-2. Extract generic editor/save/preview helpers.
-3. Refactor SOF0 and DRI onto the shared path first.
-4. Refactor DHT and DQT onto the same shared path.
-5. Only then consider splitting `tui.py` if still justified.
-6. Clean up tests into shared helpers.
-7. Run full test suite.
-8. Update docs.
-
-## Things To Avoid
-
-- Do not rewrite the TUI into a new architecture in one leap.
-- Do not introduce deep inheritance trees.
-- Do not change CLI behavior.
-- Do not weaken tests just to make refactoring easier.
-- Do not remove the live preview/edit-save behavior that already exists.
-
-## Minimum Validation
-
-Run:
-
-```bash
-python3 -m py_compile jpeg_fault/core/tui.py jpeg_fault/core/jpeg_parse.py
-../env/bin/pytest -q
-```
-
-If you split files, update the `py_compile` command accordingly.
-
-## Final Output Expected From Next Session
-
-In the final answer:
-
-- summarize the refactor at a high level
-- call out what repetition was removed
-- mention any abstractions introduced
-- mention whether `tui.py` was split or kept whole
-- report test results
-- explicitly mention any remaining structural debt that was intentionally deferred
+1. leave `wave_analysis.py` as the reusable library layer
+2. migrate another built-in optional analysis onto the plugin path
+3. prefer `dc_heatmap` first and `ac_energy_heatmap` second
+4. update `README.md` and `DOCUMENTATION.md` in the same session

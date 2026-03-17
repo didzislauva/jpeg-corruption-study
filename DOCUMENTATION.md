@@ -1,4 +1,4 @@
-# JPEG Fault Tolerance Investigation — Code Reference
+# jpeg_corruption_study — Code Reference
 
 This document is an extended, file-by-file reference for all Python classes and functions in this repo, plus how they are tied together after the API refactor.
 
@@ -9,15 +9,128 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Refactored the CLI to call a new core API layer (`jpeg_fault/core/api.py`).
 - Split the large TUI into `tui_app.py`, `tui_segments_basic.py`, `tui_segments_tables.py`, `tui_segments_appn.py`, and `tui_hex.py`.
 - Added plugin registries for core analysis plugins and TUI plugin panels.
+- Added a separate mutation-plugin family and registry.
+- Strengthened plugin isolation with typed plugin params, declared plugin needs, and richer host-prepared plugin contexts.
+- Added a built-in `sliding_wave` analysis plugin with typed params and CSV export.
 - Fixed TUI plugin panel initialization to respect Textual's real widget lifecycle.
 - Forced chart/heatmap modules onto the matplotlib `Agg` backend to avoid TUI worker thread crashes.
 - Updated tests and docs.
-- Current test baseline: `88 passed`.
+- Current test baseline: `94 passed`.
+
+## Dependency Model
+- Python 3.8+ is the baseline runtime.
+- The base parser/report/mutation flow is standard-library only.
+- This repository currently has no pinned dependency manifest file such as `requirements.txt` or `pyproject.toml`; optional imports are resolved at runtime by feature.
+
+Optional third-party dependencies inferred from the code:
+- `pillow`: required for GIF output in `media.py`, metric charts in `ssim_analysis.py`, and DCT heatmaps in `dct_analysis.py`.
+- `matplotlib`: required for metric charts, wave charts, and DCT heatmaps. These code paths force the `Agg` backend.
+- `numpy`: required for metric charts, wave charts, and DCT heatmaps.
+- `scikit-image`: required only when SSIM is requested (`--ssim-chart` or `--metrics-chart-prefix` with `ssim`).
+- `textual`: required for the fullscreen TUI (`--tui` / `--gui`) and related tests.
+- `piexif`: optional TUI-only dependency for APP1/EXIF editing. If missing, the EXIF editor is disabled but the rest of the TUI remains usable.
+- `pytest`: required to run the automated test suite.
+
+Dependency mapping by user-facing feature:
+- Basic report and mutation generation: no third-party packages required.
+- `--gif`: `pillow`
+- `--ssim-chart`: `pillow`, `matplotlib`, `numpy`, `scikit-image`
+- `--metrics-chart-prefix` with only `psnr`, `mse`, and/or `mae`: `pillow`, `matplotlib`, `numpy`
+- `--metrics-chart-prefix` when `ssim` is included: `pillow`, `matplotlib`, `numpy`, `scikit-image`
+- `--wave-chart` / `--sliding-wave-chart`: `matplotlib`, `numpy`
+- `--dc-heatmap` / `--ac-energy-heatmap`: `pillow`, `matplotlib`, `numpy`
+- `--tui` / `--gui`: `textual`
+- TUI APP1/EXIF editing: `textual`, `piexif`
+
+## Plugin Architecture
+
+The plugin system is now split into two families:
+
+- analysis plugins: produce derived outputs such as charts, reports, and inspections
+- mutation plugins: produce additional mutated files as part of the run pipeline
+
+Analysis plugin contract:
+
+- declared in `jpeg_fault/core/analysis_types.py`
+- plugins declare:
+  - `id`
+  - `label`
+  - `supported_formats`
+  - `requires_mutations`
+  - `params_spec`
+  - `needs`
+- the host validates and coerces plugin params before `run()`
+- the host prepares `AnalysisContext` based on the plugin's declared `needs`
+
+Mutation plugin contract:
+
+- declared in `jpeg_fault/core/mutation_types.py`
+- plugins declare:
+  - `id`
+  - `label`
+  - `supported_formats`
+  - `params_spec`
+  - `needs`
+- the host validates and coerces plugin params before `run()`
+- the host prepares `MutationContext` based on the plugin's declared `needs`
+
+Currently supported plugin needs:
+
+- `source_bytes`
+- `parsed_jpeg`
+- `entropy_ranges`
+- `decoded_image`
+- `mutation_outputs`
+
+Current host-prepared context model:
+
+- plugins no longer need to rediscover everything from scratch by default
+- the API can provide format, input path, output directory, debug flag, typed params, and selected optional artifacts
+- this is the current isolation boundary that future built-in plugins should target
+
+Current built-in plugin example:
+
+- `jpeg_fault/core/plugins/entropy_wave/plugin.py`
+  - declares typed params for `out_path`, `mode`, `transform`, and optional `csv_path`
+  - currently requests `source_bytes` and `entropy_ranges`
+  - can render byte-only, bit-only, or combined wave output
+  - supports first- and second-order derivative transforms for byte-mode output
+  - can optionally export the selected stream data to CSV
+- `jpeg_fault/core/plugins/sliding_wave/plugin.py`
+  - declares typed params for `out_path`, `csv_path`, `window`, `stats`, and `transform`
+  - currently requests `source_bytes` and `entropy_ranges`
+  - can render configurable sliding-window stats over raw or transformed byte streams
+  - can optionally export the selected stat series to CSV
+- `jpeg_fault/core/plugins/dc_heatmap/plugin.py`
+  - declares typed params for `out_path`, `cmap`, `plane_mode`, and `block_size`
+  - currently keeps the existing decoded-image heatmap implementation in `dct_analysis.py` as the reusable library layer
+  - defaults unnamed outputs to a descriptive filename in the current working directory using the selected plane mode and block size
+  - returns block-grid dimensions via plugin result details for compatibility with the legacy CLI summary
+- `jpeg_fault/core/plugins/ac_energy_heatmap/plugin.py`
+  - declares typed params for `out_path`, `cmap`, `plane_mode`, and `block_size`
+  - currently keeps the existing decoded-image heatmap implementation in `dct_analysis.py` as the reusable library layer
+  - defaults unnamed outputs to a descriptive filename in the current working directory using the selected plane mode and block size
+  - returns block-grid dimensions via plugin result details for compatibility with the legacy CLI summary
+
+Built-in compatibility routing:
+
+- `--wave-chart` now dispatches internally through the `entropy_wave` analysis plugin
+- `--sliding-wave-chart` now dispatches internally through the `sliding_wave` analysis plugin
+- `--dc-heatmap` now dispatches internally through the `dc_heatmap` analysis plugin
+- `--ac-energy-heatmap` now dispatches internally through the `ac_energy_heatmap` analysis plugin
+- the old CLI flags are preserved as compatibility frontends, but the plugin path is now the execution path underneath
+
+Current plugin registries:
+
+- `jpeg_fault/core/analysis_registry.py`
+- `jpeg_fault/core/mutation_registry.py`
+- `jpeg_fault/core/tui_plugin_registry.py`
 
 ## End-To-End Wiring (How It All Connects)
 - `jpg_fault_tolerance.py` is the executable entrypoint and calls `jpeg_fault.core.cli.main()`.
 - `jpeg_fault/core/cli.py` parses CLI args and converts them to `RunOptions` (from the API layer).
-- `jpeg_fault/core/api.py` orchestrates the full run: parse JPEG, print report, mutate, post-process, and run source-only analyses.
+- `jpeg_fault/core/api.py` orchestrates the full run: parse JPEG, print report, run built-in mutations, run mutation plugins, post-process outputs, run source-only analyses, and run analysis plugins.
+- Built-in wave phases now route through analysis-plugin execution instead of calling wave-analysis helpers directly.
 - `jpeg_fault/core/jpeg_parse.py` parses JPEG structure and finds entropy ranges.
 - `jpeg_fault/core/report.py` renders the human-readable, colorized JPEG report.
 - `jpeg_fault/core/mutate.py` owns all mutation logic, sampling, and file output.
@@ -25,13 +138,15 @@ This document is an extended, file-by-file reference for all Python classes and 
 - `jpeg_fault/core/ssim_analysis.py` computes metrics and writes charts.
 - `jpeg_fault/core/wave_analysis.py` writes entropy stream wave charts.
 - `jpeg_fault/core/dct_analysis.py` writes DC/AC energy heatmaps.
+- `jpeg_fault/core/analysis_types.py` defines analysis plugin param specs, needs, contexts, and results.
+- `jpeg_fault/core/mutation_types.py` defines mutation plugin contexts and results.
 - `jpeg_fault/core/debug.py` provides lightweight debug logging and optional function instrumentation.
 - `jpeg_fault/core/tui_app.py` owns the main Textual app shell and orchestration for the TUI.
 - `jpeg_fault/core/tui_segments_basic.py` owns APP0/SOF0/DRI TUI workspaces.
 - `jpeg_fault/core/tui_segments_tables.py` owns DHT/DQT TUI workspaces.
 - `jpeg_fault/core/tui_segments_appn.py` owns APP1/APP2 and generic APPn TUI workspaces.
 - `jpeg_fault/core/tui_hex.py` owns the full-file hex pane.
-- `jpeg_fault/core/analysis_registry.py` and `jpeg_fault/core/tui_plugin_registry.py` support pluggable analyses and TUI tabs.
+- `jpeg_fault/core/analysis_registry.py`, `jpeg_fault/core/mutation_registry.py`, and `jpeg_fault/core/tui_plugin_registry.py` support pluggable analysis, mutation, and TUI plugin surfaces.
 
 ## File: `jpg_fault_tolerance.py`
 **Purpose:** Thin entrypoint script.
@@ -273,14 +388,18 @@ Commands:
 - Dynamic plugin panels are created in the main TUI shell and populated only after the widget tree is ready.
 - This fixed the earlier `TabbedContent.add_pane()` / `NoMatches(ContentTabs)` startup failure.
 - TUI plugin menu insertion now uses the real `ListView` append-style path, with compatibility fallback only for test doubles.
-- The entropy-wave plugin is the current built-in example of an analysis plugin with a dedicated TUI panel.
+- TUI plugin tabs can now be built either by a custom `build_tab` callback or from plugin metadata/default param widgets.
+- The entropy-wave, sliding-wave, dc-heatmap, and ac-energy-heatmap plugins are current built-in examples of analysis plugins using the stronger plugin contract and are exposed through the metadata-driven TUI plugin panel path.
+- The old dedicated TUI Outputs-panel controls for entropy-wave and sliding-wave have been removed; the TUI path for those analyses is now the plugin tabs.
+- The old dedicated TUI Outputs-panel control for DC heatmap has been removed; the TUI path for DC heatmap is now the plugin tab.
+- The old dedicated TUI Outputs-panel control for AC energy heatmap has been removed; the TUI path for AC energy heatmap is now the plugin tab.
 
 ## Remaining Work
 
 - The TUI remains the largest maintenance hotspot by far.
 - Repeated editor mechanics across SOF0/DRI/DHT/DQT are still not abstracted enough.
 - Test coverage is now good for helper-level TUI behavior, but still light on full interactive/runtime flows.
-- The plugin framework exists and is stable enough to continue building on, but it still needs more real plugins and more end-to-end UI coverage.
+- The plugin framework is now a better foundation for future built-in migration, but it still needs more real plugins and more end-to-end UI coverage.
 
 ## File: `jpeg_fault/core/api.py`
 **Purpose:** Stable, programmatic API that mirrors CLI behavior and can be reused by TUI/GUI.

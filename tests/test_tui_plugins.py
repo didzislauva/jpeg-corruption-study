@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from jpeg_fault.core.analysis_registry import clear_registry_for_tests, register
-from jpeg_fault.core.analysis_types import AnalysisContext, AnalysisResult, AnalysisPlugin
+from jpeg_fault.core.analysis_types import AnalysisContext, AnalysisResult, AnalysisPlugin, PluginParamSpec
 from jpeg_fault.core.tui import JpegFaultTui
-from jpeg_fault.core.tui_plugin_registry import clear_tui_plugins_for_tests, register_tui_plugin
+from jpeg_fault.core.tui_plugin_registry import all_tui_plugins, clear_tui_plugins_for_tests, register_tui_plugin
 from jpeg_fault.core.tui_plugin_types import TuiPluginSpec
 from textual.widgets import ListItem
 from tests.tui_test_helpers import FakeCheckbox, FakeInput, FakeStatic, install_query
@@ -73,6 +73,7 @@ def test_init_plugin_panels_adds_menu_and_tabs(monkeypatch) -> None:
 
     monkeypatch.setattr(tui_app, "TabbedContent", FakeTabs)
     monkeypatch.setattr(tui_app, "TabPane", FakeTabPane)
+    monkeypatch.setattr(tui_app, "load_plugins", lambda debug=False: None)
 
     app._init_plugin_panels()
 
@@ -121,10 +122,8 @@ def test_menu_selected_shows_plugin_panel() -> None:
         "#panel-info": FakePanelWidget(),
         "#panel-tools": FakePanelWidget(),
         "#panel-mutation": FakePanelWidget(),
-        "#panel-strategy": FakePanelWidget(),
         "#panel-outputs": FakePanelWidget(),
         "#panel-plugins": FakePanelWidget(),
-        "#panel-run": FakePanelWidget(),
     }
 
     def fake_query(selector: str, *args, **kwargs):
@@ -157,6 +156,7 @@ def test_run_plugin_uses_params(tmp_path: Path) -> None:
         label = "Dummy"
         supported_formats = {"jpeg"}
         requires_mutations = False
+        params_spec = (PluginParamSpec(name="out_path", label="Output path", type="path"),)
 
         def run(self, input_path: str, context: AnalysisContext) -> AnalysisResult:
             calls["input_path"] = input_path
@@ -187,3 +187,16 @@ def test_run_plugin_uses_params(tmp_path: Path) -> None:
     assert calls["input_path"] == str(input_path)
     assert calls["params"] == {"out_path": str(tmp_path / "custom.png")}
     assert "Done" in status.text
+
+
+def test_load_plugins_registers_dc_heatmap_tui_plugin() -> None:
+    clear_registry_for_tests()
+    clear_tui_plugins_for_tests()
+
+    from jpeg_fault.core.analysis_registry import load_plugins
+
+    load_plugins(force=True)
+    ids = {spec.id for spec in all_tui_plugins()}
+
+    assert "dc_heatmap" in ids
+    assert "ac_energy_heatmap" in ids

@@ -1,4 +1,4 @@
-# JPEG Fault Tolerance Investigation
+# jpeg_corruption_study
 
 This project explores JPEG fault tolerance by creating controlled mutations inside the **entropy-coded data stream** (the bytes after each SOS header), while leaving JPEG headers and metadata intact. It also provides a rich, colorized report of JPEG segments and their structure.
 
@@ -43,6 +43,12 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
    - Builds a GIF from the generated mutated images
    - Supports shuffling frame order for visual randomness
 
+6. **Plugin-based extensions**
+   - Supports analysis plugins selected from the CLI with `--analysis`
+   - Supports mutation plugins selected from the CLI with `--mutation-plugin`
+   - Validates plugin parameters centrally via repeated `plugin.param=value` flags
+   - Provides richer host-prepared plugin context so built-in and future plugins can declare what they need instead of re-parsing everything themselves
+
 ## Files
 
 - `jpg_fault_tolerance.py` — Thin CLI entrypoint wrapper
@@ -55,6 +61,10 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 - `jpeg_fault/core/ssim_analysis.py` — SSIM metrics and plotting pipeline
 - `jpeg_fault/core/wave_analysis.py` — Entropy stream wave and sliding-wave charts
 - `jpeg_fault/core/dct_analysis.py` — DC and AC-energy heatmaps from decoded 8x8 DCT blocks
+- `jpeg_fault/core/analysis_types.py` — Analysis plugin contracts, parameter specs, and validation
+- `jpeg_fault/core/analysis_registry.py` — Analysis plugin registry and discovery
+- `jpeg_fault/core/mutation_types.py` — Mutation plugin contracts
+- `jpeg_fault/core/mutation_registry.py` — Mutation plugin registry and discovery
 - `jpeg_fault/core/debug.py` — Debug logging helper
 - `gradient.jpg` — Example input image
 - `mutations/` — Default output directory for mutated files
@@ -63,12 +73,19 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 ## Requirements
 
 - Python 3.8+
-- Pillow (`PIL`) only if you use `--gif`
-- `matplotlib`, `numpy`, and `scikit-image` only if you use `--ssim-chart`
-- `matplotlib` and `numpy` if you use `--wave-chart` or `--sliding-wave-chart`
-- `Pillow`, `matplotlib`, and `numpy` if you use `--dc-heatmap` or `--ac-energy-heatmap`
-- `textual` if you use the fullscreen TUI (`--tui` / `--gui`)
-- `pytest` only if you run tests
+- The base CLI/report/mutation path uses only the Python standard library.
+- This repo currently does not ship a pinned dependency manifest such as `requirements.txt` or `pyproject.toml`; optional packages are feature-gated in code.
+
+Optional dependencies by feature:
+
+- `pillow` for `--gif`
+- `pillow`, `matplotlib`, and `numpy` for `--metrics-chart-prefix` with `psnr`, `mse`, or `mae`
+- `pillow`, `matplotlib`, `numpy`, and `scikit-image` for `--ssim-chart` or `--metrics-chart-prefix` when `ssim` is included
+- `matplotlib` and `numpy` for `--wave-chart` or `--sliding-wave-chart`
+- `pillow`, `matplotlib`, and `numpy` for `--dc-heatmap` or `--ac-energy-heatmap`
+- `textual` for the fullscreen TUI (`--tui` / `--gui`)
+- `piexif` for APP1/EXIF editing inside the TUI; without it, the EXIF editor is disabled but the rest of the TUI still works
+- `pytest` to run the test suite
 
 Install Pillow if needed:
 
@@ -80,6 +97,12 @@ Install SSIM chart dependencies if needed:
 
 ```bash
 python3 -m pip install matplotlib numpy scikit-image
+```
+
+Install metric chart dependencies for `psnr`, `mse`, or `mae` if needed:
+
+```bash
+python3 -m pip install pillow matplotlib numpy
 ```
 
 Install wave chart dependencies if needed:
@@ -98,6 +121,12 @@ Install TUI dependency if needed:
 
 ```bash
 python3 -m pip install textual
+```
+
+Install EXIF editing support for the TUI if needed:
+
+```bash
+python3 -m pip install piexif
 ```
 
 ## Usage
@@ -149,7 +178,139 @@ The TUI includes:
 - APP2 ICC profile decoder with editable header/tags and live hex updates
 - DQT tab with per-segment workspaces: bytes/info on the left, grid/zigzag/stats/usage/heatmap/edit views on the right
 - Tools tab with a custom APPn writer
-- Plugin panels for analysis-specific tools (currently includes an entropy-wave output panel)
+- Plugin panels for analysis-specific tools (currently includes entropy-wave, sliding-wave, DC-heatmap, and AC-energy output tabs; all four are launched there instead of from the Outputs panel)
+
+### Plugins
+
+The plugin system now has two families:
+
+- analysis plugins: optional derived outputs such as charts, reports, and format-specific inspections
+- mutation plugins: optional file-generating mutation passes that can participate in the main run
+
+Current built-in plugin example:
+
+- `entropy_wave` analysis plugin
+- `sliding_wave` analysis plugin
+- `dc_heatmap` analysis plugin
+- `ac_energy_heatmap` analysis plugin
+
+The legacy built-in wave options are still available:
+
+- `--wave-chart`
+- `--sliding-wave-chart`
+- `--dc-heatmap`
+- `--ac-energy-heatmap`
+
+They now act as compatibility frontends over the `entropy_wave`, `sliding_wave`, `dc_heatmap`, and `ac_energy_heatmap` analysis plugins internally.
+
+CLI plugin selection:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg --analysis entropy_wave
+```
+
+Pass plugin parameters with repeated `plugin.param=value` flags:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --analysis entropy_wave \
+  --analysis-param entropy_wave.out_path=custom_wave.png
+```
+
+The built-in `entropy_wave` plugin currently supports:
+
+- `out_path`: output image path
+- `mode`: `byte`, `bit`, or `both` (default: `byte`)
+- `transform`: `raw`, `diff1`, or `diff2` for the byte stream (default: `raw`)
+- `csv_path`: optional CSV export path for the selected stream data
+
+Example with byte-only output plus CSV export:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --analysis entropy_wave \
+  --analysis-param entropy_wave.mode=byte \
+  --analysis-param entropy_wave.transform=diff1 \
+  --analysis-param entropy_wave.out_path=wave.png \
+  --analysis-param entropy_wave.csv_path=wave.csv
+```
+
+Note: `transform` is currently supported only for byte-mode entropy waves.
+
+The built-in `sliding_wave` plugin currently supports:
+
+- `out_path`: output image path
+- `csv_path`: optional CSV export path
+- `window`: sliding-window size in bytes
+- `stats`: comma-separated stats from `mean,variance,std,entropy,min,max,range,energy`
+- `transform`: `raw`, `diff1`, or `diff2` applied before the sliding-window stats are computed
+
+Example with multiple sliding stats plus CSV export:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --analysis sliding_wave \
+  --analysis-param sliding_wave.window=512 \
+  --analysis-param sliding_wave.transform=diff2 \
+  --analysis-param sliding_wave.stats=mean,max,energy \
+  --analysis-param sliding_wave.out_path=sliding.png \
+  --analysis-param sliding_wave.csv_path=sliding.csv
+```
+
+The built-in `dc_heatmap` plugin currently supports:
+
+- `out_path`: output image path; if omitted, defaults to `./<input>_dc_heatmap_<plane_mode>_b<block_size>.png`
+- `cmap`: matplotlib colormap name (default: `coolwarm`)
+- `plane_mode`: one of `bt601`, `bt709`, `average`, `lightness`, `max`, `min`, `red`, `green`, `blue` (default: `bt601`)
+- `block_size`: transform block size (default: `8`)
+
+Example:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --analysis dc_heatmap \
+  --analysis-param dc_heatmap.out_path=dc.png \
+  --analysis-param dc_heatmap.cmap=viridis \
+  --analysis-param dc_heatmap.plane_mode=green \
+  --analysis-param dc_heatmap.block_size=16
+```
+
+Note: `block_size=8` is the JPEG-native view. Other block sizes are exploratory and no longer correspond exactly to JPEG’s fixed 8x8 block structure.
+
+The built-in `ac_energy_heatmap` plugin currently supports:
+
+- `out_path`: output image path; if omitted, defaults to `./<input>_ac_energy_heatmap_<plane_mode>_b<block_size>.png`
+- `cmap`: matplotlib colormap name (default: `magma`)
+- `plane_mode`: one of `bt601`, `bt709`, `average`, `lightness`, `max`, `min`, `red`, `green`, `blue` (default: `bt601`)
+- `block_size`: transform block size (default: `8`)
+
+Example:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --analysis ac_energy_heatmap \
+  --analysis-param ac_energy_heatmap.out_path=ac.png \
+  --analysis-param ac_energy_heatmap.cmap=viridis \
+  --analysis-param ac_energy_heatmap.plane_mode=green \
+  --analysis-param ac_energy_heatmap.block_size=16
+```
+
+Note: `block_size=8` is the JPEG-native view. Other block sizes are exploratory and no longer correspond exactly to JPEG’s fixed 8x8 block structure.
+
+Mutation plugins use the parallel CLI surface:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --mutation-plugin some_plugin_id \
+  --mutation-plugin-param some_plugin_id.example=value
+```
+
+Plugin contracts are now more isolated than before:
+
+- plugins declare typed params
+- plugins declare what host-provided data they need
+- the host prepares context such as source bytes, parsed JPEG structure, entropy ranges, decoded images, or mutation outputs
+- TUI plugin tabs can be generated from plugin metadata instead of relying only on hand-wired widget conventions
 
 ## TUI Notes
 
@@ -174,14 +335,20 @@ The TUI includes:
 
 - Core CLI/API, parser, mutation logic, reporting, and source-only analysis paths are working.
 - The fullscreen TUI starts successfully and the plugin panel initialization path is fixed.
-- The entropy-wave plugin can be launched from the TUI without the previous Tk/thread crash.
-- Current automated baseline: `88 passed` via `../env/bin/pytest`.
+- The plugin system now supports stronger isolation via typed params, declared plugin needs, richer host-prepared analysis context, and a separate mutation-plugin family.
+- The entropy-wave, sliding-wave, dc-heatmap, and ac-energy-heatmap plugins can be launched from the TUI using the metadata-driven plugin path.
+- In the TUI, entropy wave and sliding wave are launched from the `Graphic Output` plugin tabs rather than dedicated fields in the `Outputs` panel.
+- In the TUI, DC heatmap is launched from the `Graphic Output` plugin tab rather than a dedicated field in the `Outputs` panel.
+- In the TUI, AC energy heatmap is launched from the `Graphic Output` plugin tab rather than a dedicated field in the `Outputs` panel.
+- `--dc-heatmap` now dispatches internally through the `dc_heatmap` analysis plugin.
+- `--ac-energy-heatmap` now dispatches internally through the `ac_energy_heatmap` analysis plugin.
+- Current automated baseline: `94 passed` via `../env/bin/pytest`.
 
 ## What Still Needs Work
 
 - The TUI is still the highest-maintenance part of the repo and remains the main refactor target.
 - Large editor/workspace mixins still contain repeated save/preview/mode-switch mechanics.
-- Plugin coverage is still narrow; the plugin framework exists, but only a small amount of real plugin functionality is wired today.
+- Plugin coverage is still narrow; the framework is now stronger, but only a small amount of real plugin functionality has been migrated onto it so far.
 - More runtime-oriented TUI tests would still be valuable beyond the current fake-widget coverage.
 
 ### Generate mutations
@@ -606,6 +773,18 @@ APP2 often contains an **ICC profile** (`ICC_PROFILE`). The TUI decodes the ICC 
 - Add full Huffman table decoding (code lengths and values)
 - Add stratified sampling across multiple scans
 - Export a CSV index of all mutations
+
+## Session Handoff
+
+- The analysis-plugin migration for wave/DC/AC outputs is substantially done.
+- In the TUI, those analyses are now launched from `Graphic Output` plugin tabs instead of the old dedicated Outputs-panel controls.
+- The TUI Mutation page now combines mutation, strategy, and run controls on one page and includes a help column plus equivalent CLI command.
+- Current mutation semantics to preserve:
+  - `independent`: random offsets, each file starts from the original
+  - `cumulative`: random mutable offsets accumulated across files
+  - `sequential`: contiguous mutable offsets accumulated across files
+- Important caveat: current `sequential` behavior is contiguous in mutable-offset order, not guaranteed contiguous raw file bytes.
+- Another caveat: sequential outputs still use `cum_...` in filenames because they reuse the cumulative naming helper. That naming should be cleaned up if the mutation-output UX is revisited.
 
 ## License
 

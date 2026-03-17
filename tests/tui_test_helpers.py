@@ -42,6 +42,11 @@ class FakeCheckbox:
         self.value = value
 
 
+class FakeSelect:
+    def __init__(self, value=None) -> None:
+        self.value = value
+
+
 class FakeButton:
     def __init__(self, disabled: bool = False) -> None:
         self.disabled = disabled

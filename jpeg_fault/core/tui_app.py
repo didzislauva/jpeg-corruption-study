@@ -47,7 +47,7 @@ from rich.text import Text
 
 from . import api
 from .analysis_registry import all_plugins, get_plugin, load_plugins
-from .analysis_types import AnalysisContext
+from .analysis_types import AnalysisContext, PluginParamSpec, validate_plugin_params
 from .format_detect import detect_format
 from .tui_plugin_registry import all_tui_plugins
 from .jpeg_parse import (
@@ -105,11 +105,7 @@ class TuiDefaults:
     metrics_chart_prefix: str = ""
     jobs: str = ""
     analysis: str = ""
-    wave_chart: str = ""
-    sliding_wave_chart: str = ""
-    wave_window: int = 256
-    dc_heatmap: str = ""
-    ac_energy_heatmap: str = ""
+    mutation_plugins: str = ""
     debug: bool = False
 
 
@@ -135,7 +131,11 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     .panel-title { margin: 1 0; }
     .field { margin: 0 0 1 0; }
     .row { height: auto; }
-    #log { height: 1fr; border: solid $secondary; }
+    #log { height: 3; border: solid $secondary; }
+    #mutation-left { width: 1fr; }
+    #mutation-right { width: 1fr; }
+    #mutation-help-col { width: 1fr; }
+    #mutation-help { height: 1fr; border: solid $secondary; }
     #app0-info { width: 1fr; border: solid $secondary; }
     #app0-edit { width: 1fr; border: solid $secondary; }
     #app0-col-left { width: 1fr; }
@@ -226,19 +226,15 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
                 yield ListItem(Label("Info"), id="menu-info")
                 yield ListItem(Label("Tools"), id="menu-tools")
                 yield ListItem(Label("Mutation"), id="menu-mutation")
-                yield ListItem(Label("Strategy"), id="menu-strategy")
                 yield ListItem(Label("Outputs"), id="menu-outputs")
                 yield ListItem(Label("Plugins"), id="menu-plugins")
-                yield ListItem(Label("Run"), id="menu-run")
             with Container(id="panel"):
                 yield self._build_input_panel()
                 yield self._build_info_panel()
                 yield self._build_tools_panel()
                 yield self._build_mutation_panel()
-                yield self._build_strategy_panel()
                 yield self._build_outputs_panel()
                 yield self._build_plugins_panel()
-                yield self._build_run_panel()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -254,6 +250,8 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         self.call_later(self._apply_app0_mode_visibility)
         self.call_later(self._apply_dri_mode_visibility)
         self.call_later(self._apply_sof0_mode_visibility)
+        self.call_later(self._apply_mutation_mode_visibility)
+        self.call_later(self._refresh_mutation_help)
         self.call_later(lambda: self._set_current_dir(Path(".")))
         self.call_later(self._refresh_plugins_list)
         self.call_later(self._init_plugin_panels)
@@ -303,21 +301,263 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
 
     def _build_mutation_panel(self) -> VerticalScroll:
         panel = VerticalScroll(
-            Label("Mutation", classes="panel-title"),
-            Static("Select how bytes are mutated and sampled.", classes="field"),
-            Label("Mutation mode", classes="field"),
-            Input(value=self.defaults.mutate, id="mutate-mode"),
-            Label("Sample (0 = all/maximum)", classes="field"),
-            Input(value=str(self.defaults.sample), id="sample"),
-            Label("Seed", classes="field"),
-            Input(value=str(self.defaults.seed), id="seed"),
-            Checkbox("Overflow wrap (add1/sub1)", value=self.defaults.overflow_wrap, id="overflow-wrap"),
-            Checkbox("Report only", value=self.defaults.report_only, id="report-only"),
-            Checkbox("Debug logging", value=self.defaults.debug, id="debug"),
+            Horizontal(
+                Vertical(
+                    Label("Mutation", classes="field"),
+                    Label("Mutation mode", classes="field"),
+                    Select(
+                        self._mutation_mode_options(),
+                        value=self._default_mutation_mode_value(),
+                        id="mutate-mode",
+                    ),
+                    Static("Bit indexes (comma-separated, or lsb/msb)", classes="field", id="mutate-bitflip-label"),
+                    Input(value=self._default_mutation_bits_value(), id="mutate-bitflip-bits"),
+                    Label("Sample (0 = all/maximum)", classes="field"),
+                    Input(value=str(self.defaults.sample), id="sample"),
+                    Label("Seed", classes="field"),
+                    Input(value=str(self.defaults.seed), id="seed"),
+                    Checkbox("Overflow wrap (add1/sub1)", value=self.defaults.overflow_wrap, id="overflow-wrap"),
+                    id="mutation-left",
+                ),
+                Vertical(
+                    Label("Strategy", classes="field"),
+                    Label("Mutation application strategy", classes="field"),
+                    Select(
+                        [
+                            ("independent", "independent"),
+                            ("cumulative", "cumulative"),
+                            ("sequential", "sequential"),
+                        ],
+                        value=self.defaults.mutation_apply,
+                        id="mutation-apply",
+                    ),
+                    Label("Repeats (cumulative/sequential)", classes="field"),
+                    Input(value=str(self.defaults.repeats), id="repeats"),
+                    Label("Step (cumulative/sequential)", classes="field"),
+                    Input(value=str(self.defaults.step), id="step"),
+                    Checkbox("Report only", value=self.defaults.report_only, id="report-only"),
+                    Checkbox("Debug logging", value=self.defaults.debug, id="debug"),
+                    Static("", id="run-error"),
+                    Button("Run", id="run-btn", variant="success"),
+                    RichLog(id="log", highlight=True),
+                    id="mutation-right",
+                ),
+                Vertical(
+                    Label("Will Generate", classes="field"),
+                    Static("", id="mutation-help"),
+                    id="mutation-help-col",
+                ),
+                classes="row",
+            ),
             id="panel-mutation",
         )
         panel.display = False
         return panel
+
+    def _mutation_mode_options(self) -> list[tuple[str, str]]:
+        return [(mode, mode) for mode in ("add1", "sub1", "flipall", "ff", "00", "bitflip")]
+
+    def _default_mutation_mode_value(self) -> str:
+        spec = self.defaults.mutate.strip()
+        return "bitflip" if spec.startswith("bitflip:") else (spec or "add1")
+
+    def _default_mutation_bits_value(self) -> str:
+        spec = self.defaults.mutate.strip()
+        if spec.startswith("bitflip:"):
+            return spec.split(":", 1)[1] or "0,2,7"
+        return "0,2,7"
+
+    def _apply_mutation_mode_visibility(self) -> None:
+        try:
+            mode = self.query_one("#mutate-mode", Select).value
+            label = self.query_one("#mutate-bitflip-label", Static)
+            bits = self.query_one("#mutate-bitflip-bits", Input)
+        except Exception:
+            return
+        show = mode == "bitflip"
+        label.display = show
+        bits.display = show
+
+    def _refresh_mutation_help(self) -> None:
+        try:
+            help_widget = self.query_one("#mutation-help", Static)
+        except Exception:
+            return
+        help_widget.update(self._mutation_help_text())
+
+    def _mutation_help_text(self) -> str:
+        mutate_mode = self._select_value("#mutate-mode", default="add1")
+        bit_spec = self._input_value("#mutate-bitflip-bits", default="0,2,7")
+        mutate = f"bitflip:{bit_spec}" if mutate_mode == "bitflip" else mutate_mode
+        strategy = self._select_value("#mutation-apply", default="independent")
+        sample = self._input_value("#sample", default="100")
+        seed = self._input_value("#seed", default="3")
+        repeats = self._input_value("#repeats", default="1")
+        step = self._input_value("#step", default="1")
+        overflow_wrap = self._checkbox_value("#overflow-wrap")
+        report_only = self._checkbox_value("#report-only")
+        debug = self._checkbox_value("#debug")
+        gif = self._input_value("#gif")
+        ssim_chart = self._input_value("#ssim-chart")
+        metrics_prefix = self._input_value("#metrics-prefix")
+        selected_plugins = self._safe_selected_plugins_csv()
+        input_path = self._input_value("#input-path", default="<input.jpg>")
+        output_dir = self._input_value("#output-dir", default="mutations")
+
+        lines = [
+            self._describe_mutation_mode(mutate, sample, overflow_wrap),
+            self._describe_mutation_strategy(strategy, repeats, step),
+        ]
+        if report_only:
+            lines.append(
+                "Report only is enabled, so the app will parse and report the JPEG structure but will not write mutated JPEG files."
+            )
+        else:
+            lines.append(
+                "The main output will be mutated JPEG files written into the selected output directory according to the mutation mode and strategy above."
+            )
+        extras: list[str] = []
+        if gif:
+            extras.append("a GIF built from the generated mutation outputs")
+        if ssim_chart:
+            extras.append("an SSIM chart for the generated mutation outputs")
+        if metrics_prefix:
+            extras.append("metric charts for the generated mutation outputs")
+        if selected_plugins:
+            extras.append(f"analysis plugin outputs from {selected_plugins}")
+        if extras:
+            lines.append("In addition, the current settings will generate " + ", ".join(extras) + ".")
+        else:
+            lines.append("No extra derived outputs are currently enabled beyond the main mutated JPEG files.")
+        lines.append(self._mutation_cli_text(input_path, output_dir, mutate, sample, seed, strategy, repeats, step, overflow_wrap, report_only, debug))
+        return "\n\n".join(lines)
+
+    def _describe_mutation_mode(self, mutate: str, sample: str, overflow_wrap: bool) -> str:
+        if mutate == "add1":
+            effect = "Each selected entropy byte will be increased by 1."
+            if overflow_wrap:
+                effect += " If a byte is 0xFF, it will wrap to 0x00 instead of being skipped."
+            else:
+                effect += " Bytes already at 0xFF will be skipped."
+        elif mutate == "sub1":
+            effect = "Each selected entropy byte will be decreased by 1."
+            if overflow_wrap:
+                effect += " If a byte is 0x00, it will wrap to 0xFF instead of being skipped."
+            else:
+                effect += " Bytes already at 0x00 will be skipped."
+        elif mutate == "flipall":
+            effect = "Each selected entropy byte will be inverted bitwise."
+        elif mutate == "ff":
+            effect = "Each selected entropy byte will be replaced with 0xFF."
+        elif mutate == "00":
+            effect = "Each selected entropy byte will be replaced with 0x00."
+        elif mutate.startswith("bitflip:"):
+            bits = mutate.split(":", 1)[1]
+            effect = f"Each selected entropy byte will have bit positions {bits} toggled."
+        else:
+            effect = f"Selected entropy bytes will be mutated using {mutate}."
+        return f"{effect} The current sample setting is {sample}, which controls how many offsets or mutation steps will be generated."
+
+    def _describe_mutation_strategy(self, strategy: str, repeats: str, step: str) -> str:
+        if strategy == "independent":
+            return (
+                "Independent strategy means every output file starts from the original JPEG, so each file shows one isolated mutation result without carrying prior byte changes forward."
+            )
+        if strategy == "cumulative":
+            return (
+                f"Cumulative strategy means output files are populated in sequence, and each new file keeps all earlier byte changes and adds the next group of mutations. Repeats is {repeats} and step is {step}, so each step adds {step} more mutable-byte edits per repeat set."
+            )
+        if strategy == "sequential":
+            return (
+                f"Sequential strategy also keeps earlier byte changes in later files, but it walks forward through contiguous mutable entropy bytes instead of sampling them randomly. Repeats is {repeats} and step is {step}, so each successive file grows by {step} neighboring byte edits per repeat set."
+            )
+        return f"The selected strategy is {strategy} with repeats={repeats} and step={step}."
+
+    def _mutation_cli_text(
+        self,
+        input_path: str,
+        output_dir: str,
+        mutate: str,
+        sample: str,
+        seed: str,
+        strategy: str,
+        repeats: str,
+        step: str,
+        overflow_wrap: bool,
+        report_only: bool,
+        debug: bool,
+    ) -> str:
+        parts = [
+            f"./jpg_fault_tolerance.py {input_path}",
+            f"-o {output_dir}",
+            f"--mutate {mutate}",
+            f"--sample {sample}",
+            f"--seed {seed}",
+            f"--mutation-apply {strategy}",
+        ]
+        if repeats != "1":
+            parts.append(f"--repeats {repeats}")
+        if step != "1":
+            parts.append(f"--step {step}")
+        if overflow_wrap:
+            parts.append("--overflow-wrap")
+        if report_only:
+            parts.append("--report-only")
+        if debug:
+            parts.append("--debug")
+        return "Equivalent CLI command:\n" + " ".join(parts)
+
+    def _input_value(self, selector: str, default: str = "") -> str:
+        try:
+            return self.query_one(selector, Input).value.strip()
+        except Exception:
+            return default
+
+    def _select_value(self, selector: str, default: str = "") -> str:
+        try:
+            value = self.query_one(selector, Select).value
+        except Exception:
+            return default
+        return default if value is None else str(value).strip()
+
+    def _checkbox_value(self, selector: str) -> bool:
+        try:
+            return bool(self.query_one(selector, Checkbox).value)
+        except Exception:
+            return False
+
+    def _safe_selected_plugins_csv(self) -> str:
+        try:
+            return self._selected_plugins_csv()
+        except Exception:
+            return ""
+
+    @on(Select.Changed, "#mutate-mode")
+    def _on_mutation_mode_changed(self, _event: Select.Changed) -> None:
+        self._apply_mutation_mode_visibility()
+        self._refresh_mutation_help()
+
+    @on(Select.Changed, "#mutation-apply")
+    def _on_mutation_strategy_changed(self, _event: Select.Changed) -> None:
+        self._refresh_mutation_help()
+
+    @on(Input.Changed)
+    def _on_mutation_help_input_changed(self, event: Input.Changed) -> None:
+        if (event.input.id or "") in {
+            "mutate-bitflip-bits",
+            "sample",
+            "seed",
+            "repeats",
+            "step",
+            "gif",
+            "ssim-chart",
+            "metrics-prefix",
+        }:
+            self._refresh_mutation_help()
+
+    @on(Checkbox.Changed)
+    def _on_mutation_help_checkbox_changed(self, _event: Checkbox.Changed) -> None:
+        self._refresh_mutation_help()
 
     def _build_tools_panel(self) -> VerticalScroll:
         panel = VerticalScroll(
@@ -332,29 +572,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         panel = VerticalScroll(
             TabbedContent(id="info-tabs"),
             id="panel-info",
-        )
-        panel.display = False
-        return panel
-
-    def _build_strategy_panel(self) -> VerticalScroll:
-        panel = VerticalScroll(
-            Label("Strategy", classes="panel-title"),
-            Static("Choose how mutations are applied across outputs.", classes="field"),
-            Label("Mutation application strategy", classes="field"),
-            Select(
-                [
-                    ("independent", "independent"),
-                    ("cumulative", "cumulative"),
-                    ("sequential", "sequential"),
-                ],
-                value=self.defaults.mutation_apply,
-                id="mutation-apply",
-            ),
-            Label("Repeats (cumulative/sequential)", classes="field"),
-            Input(value=str(self.defaults.repeats), id="repeats"),
-            Label("Step (cumulative/sequential)", classes="field"),
-            Input(value=str(self.defaults.step), id="step"),
-            id="panel-strategy",
         )
         panel.display = False
         return panel
@@ -378,16 +595,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             Input(value=self.defaults.metrics_chart_prefix, id="metrics-prefix"),
             Label("Jobs (blank = auto)", classes="field"),
             Input(value=self.defaults.jobs, id="jobs"),
-            Label("Wave chart output path", classes="field"),
-            Input(value=self.defaults.wave_chart, id="wave-chart"),
-            Label("Sliding wave chart output path", classes="field"),
-            Input(value=self.defaults.sliding_wave_chart, id="sliding-wave-chart"),
-            Label("Wave window", classes="field"),
-            Input(value=str(self.defaults.wave_window), id="wave-window"),
-            Label("DC heatmap output path", classes="field"),
-            Input(value=self.defaults.dc_heatmap, id="dc-heatmap"),
-            Label("AC energy heatmap output path", classes="field"),
-            Input(value=self.defaults.ac_energy_heatmap, id="ac-heatmap"),
             id="panel-outputs",
         )
         panel.display = False
@@ -454,8 +661,50 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         if getattr(tabs, "_plugin_tabs_loaded", False):
             return
         for spec in panel_specs:
-            tabs.add_pane(TabPane(spec.tab_label, spec.build_tab(self)))
+            tabs.add_pane(TabPane(spec.tab_label, self._plugin_tab_content(spec)))
         setattr(tabs, "_plugin_tabs_loaded", True)
+
+    def _plugin_tab_content(self, spec) -> object:
+        if spec.build_tab is not None:
+            return spec.build_tab(self)
+        plugin_id = spec.analysis_plugin_id or spec.id
+        plugin = get_plugin(plugin_id)
+        if plugin is None:
+            return VerticalScroll(Static(f"Plugin not found: {plugin_id}", classes="field"))
+        return self._build_default_plugin_tab(plugin)
+
+    def _build_default_plugin_tab(self, plugin) -> object:
+        children: list[object] = []
+        for param_spec in getattr(plugin, "params_spec", ()):
+            children.extend(self._build_plugin_param_widgets(plugin.id, param_spec))
+        if not children:
+            children.append(Static("This plugin has no configurable parameters.", classes="field"))
+        children.extend(
+            [
+                Button(f"Run {plugin.label}", id=f"plugin-run-{plugin.id}", variant="success", classes="plugin-run"),
+                Static("", id=f"plugin-{plugin.id}-status"),
+            ]
+        )
+        return VerticalScroll(*children)
+
+    def _build_plugin_param_widgets(self, plugin_id: str, spec: PluginParamSpec) -> list[object]:
+        input_id = f"plugin-{plugin_id}-{spec.name.replace('_', '-')}"
+        default_text = "" if spec.default is None else str(spec.default)
+        label = spec.label + (" *" if spec.required else "")
+        widgets: list[object] = [Static(label, classes="field")]
+        if spec.type == "choice" and spec.choices:
+            widgets.append(
+                Select(
+                    [(choice, choice) for choice in spec.choices],
+                    value=default_text or spec.choices[0],
+                    id=input_id,
+                )
+            )
+        else:
+            widgets.append(Input(value=default_text, id=input_id))
+        if spec.help:
+            widgets.append(Static(spec.help, classes="field"))
+        return widgets
 
     def _append_list_view_item(self, list_view: object, item: ListItem) -> None:
         append = getattr(list_view, "append", None)
@@ -467,18 +716,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             add_item(item)
             return
         raise AttributeError("List view does not support append or add_item")
-
-    def _build_run_panel(self) -> VerticalScroll:
-        panel = VerticalScroll(
-            Label("Run", classes="panel-title"),
-            Static("Press Run to execute using the current options.", classes="field"),
-            Static("", id="run-error"),
-            Button("Run", id="run-btn", variant="success"),
-            RichLog(id="log", highlight=True),
-            id="panel-run",
-        )
-        panel.display = False
-        return panel
 
     @on(DirectoryTree.FileSelected)
     def _on_file_selected(self, event: DirectoryTree.FileSelected) -> None:
@@ -544,14 +781,10 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             self._show_panel("tools")
         elif item_id == "menu-mutation":
             self._show_panel("mutation")
-        elif item_id == "menu-strategy":
-            self._show_panel("strategy")
         elif item_id == "menu-outputs":
             self._show_panel("outputs")
         elif item_id == "menu-plugins":
             self._show_panel("plugins")
-        elif item_id == "menu-run":
-            self._show_panel("run")
         elif item_id.startswith("menu-plugin-"):
             panel_id = item_id.replace("menu-plugin-", "", 1)
             self._show_panel(f"plugin-{panel_id}")
@@ -562,10 +795,8 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         self.query_one("#panel-info").display = name == "info"
         self.query_one("#panel-tools").display = name == "tools"
         self.query_one("#panel-mutation").display = name == "mutation"
-        self.query_one("#panel-strategy").display = name == "strategy"
         self.query_one("#panel-outputs").display = name == "outputs"
         self.query_one("#panel-plugins").display = name == "plugins"
-        self.query_one("#panel-run").display = name == "run"
         for panel_id, panel in self.plugin_panels.items():
             panel.display = name == f"plugin-{panel_id}"
 
@@ -724,7 +955,11 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         output_dir = self.query_one("#output-dir", Input).value.strip() or "mutations"
         color = self.query_one("#color-mode", Input).value.strip() or "auto"
 
-        mutate = self.query_one("#mutate-mode", Input).value.strip()
+        mutate_value = self.query_one("#mutate-mode", Select).value
+        mutate = "" if mutate_value is None else str(mutate_value).strip()
+        if mutate == "bitflip":
+            bits = self.query_one("#mutate-bitflip-bits", Input).value.strip() or "0,2,7"
+            mutate = f"bitflip:{bits}"
         sample = self._get_int(self.query_one("#sample", Input).value, "Sample")
         seed = self._get_int(self.query_one("#seed", Input).value, "Seed")
         overflow_wrap = self.query_one("#overflow-wrap", Checkbox).value
@@ -744,11 +979,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         metrics_prefix = self.query_one("#metrics-prefix", Input).value.strip()
         jobs = self._get_optional_int(self.query_one("#jobs", Input).value, "Jobs")
         analysis = self._selected_plugins_csv()
-        wave_chart = self.query_one("#wave-chart", Input).value.strip()
-        sliding_wave_chart = self.query_one("#sliding-wave-chart", Input).value.strip()
-        wave_window = self._get_int(self.query_one("#wave-window", Input).value, "Wave window")
-        dc_heatmap = self.query_one("#dc-heatmap", Input).value.strip()
-        ac_heatmap = self.query_one("#ac-heatmap", Input).value.strip()
 
         return api.RunOptions(
             input_path=input_path,
@@ -771,11 +1001,14 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             metrics_chart_prefix=metrics_prefix or None,
             jobs=jobs,
             analysis=analysis,
-            wave_chart=wave_chart or None,
-            sliding_wave_chart=sliding_wave_chart or None,
-            wave_window=wave_window,
-            dc_heatmap=dc_heatmap or None,
-            ac_energy_heatmap=ac_heatmap or None,
+            analysis_params=[],
+            mutation_plugins="",
+            mutation_plugin_params=[],
+            wave_chart=None,
+            sliding_wave_chart=None,
+            wave_window=256,
+            dc_heatmap=None,
+            ac_energy_heatmap=None,
             debug=debug,
         )
 
@@ -813,6 +1046,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             cb.disabled = fmt not in plugin.supported_formats
             list_container.mount(cb)
             self.plugin_checkbox_ids[plugin.id] = cb.id
+        self._refresh_mutation_help()
 
     def _selected_plugins_csv(self) -> str:
         selected: list[str] = []
@@ -1384,17 +1618,33 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             self._plugin_status(plugin_id, f"Unsupported format: {fmt}")
             return
         params: dict[str, str] = {}
+        for spec in getattr(plugin, "params_spec", ()):
+            raw_value = self._plugin_param_input_value(plugin_id, spec)
+            if raw_value is not None:
+                params[spec.name] = raw_value
         try:
-            out_value = self.query_one(f"#plugin-{plugin_id}-out", Input).value.strip()
-            if out_value:
-                params["out_path"] = out_value
-        except Exception:
-            pass
+            params = validate_plugin_params(plugin, params)
+        except ValueError as exc:
+            self._plugin_status(plugin_id, f"Error: {exc}")
+            return
         self._plugin_status(plugin_id, "Running...")
 
         def _run() -> None:
-            context = AnalysisContext(output_dir=output_dir, debug=debug, params=params)
             try:
+                data = Path(input_path).read_bytes()
+                segments, entropy_ranges = parse_jpeg(data) if fmt == "jpeg" else ([], [])
+                context = api._build_analysis_context(  # type: ignore[attr-defined]
+                    plugin=plugin,
+                    input_path=input_path,
+                    fmt=fmt,
+                    output_dir=output_dir,
+                    debug=debug,
+                    params=params,
+                    data=data,
+                    segments=segments,
+                    entropy_ranges=entropy_ranges,
+                    mutation_paths=[],
+                )
                 result = plugin.run(input_path, context)
             except Exception as exc:
                 self.call_from_thread(self._plugin_status, plugin_id, f"Error: {exc}")
@@ -1403,6 +1653,27 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             self.call_from_thread(self._plugin_status, plugin_id, f"Done: {count} output(s)")
 
         self.run_worker(_run, exclusive=True, name=f"plugin-{plugin_id}", group="plugin", thread=True)
+
+    def _plugin_param_input_value(self, plugin_id: str, spec: PluginParamSpec) -> Optional[str]:
+        candidates = [
+            f"#plugin-{plugin_id}-{spec.name}",
+            f"#plugin-{plugin_id}-{spec.name.replace('_', '-')}",
+        ]
+        if spec.name == "out_path":
+            candidates.append(f"#plugin-{plugin_id}-out")
+        for selector in candidates:
+            try:
+                widget = self.query_one(selector, Input)
+                return widget.value.strip()
+            except Exception:
+                pass
+            try:
+                select = self.query_one(selector, Select)
+                value = select.value
+                return "" if value is None else str(value).strip()
+            except Exception:
+                continue
+        return None
 
     @on(Worker.StateChanged)
     def _on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -1431,6 +1702,9 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         if result.plugin_results:
             for plugin_id, outputs in result.plugin_results.items():
                 log.write(f"Plugin {plugin_id}: {len(outputs)} output(s)")
+        if result.mutation_plugin_results:
+            for plugin_id, outputs in result.mutation_plugin_results.items():
+                log.write(f"Mutation plugin {plugin_id}: {len(outputs)} output(s)")
         if result.wave_len is not None:
             log.write(f"Wave chart bytes: {result.wave_len}")
         if result.sliding_len is not None:

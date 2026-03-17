@@ -1,0 +1,11 @@
+# Full dependency set for the JPEG corruption study project.
+# The base parser/report/mutation path is stdlib-only, but installing this file
+# enables the TUI, charts, GIF output, EXIF editing, and tests.
+
+pillow
+matplotlib
+numpy
+scikit-image
+textual
+piexif
+pytest

@@ -52,6 +52,9 @@ def to_run_options(args: argparse.Namespace) -> RunOptions:
         metrics_chart_prefix=args.metrics_chart_prefix,
         jobs=args.jobs,
         analysis=args.analysis,
+        analysis_params=args.analysis_param or [],
+        mutation_plugins=args.mutation_plugin,
+        mutation_plugin_params=args.mutation_plugin_param or [],
         wave_chart=args.wave_chart,
         sliding_wave_chart=args.sliding_wave_chart,
         wave_window=args.wave_window,
@@ -184,6 +187,9 @@ def main() -> int:
         if options.metrics_chart_prefix and result.metric_sets:
             for out_path, set_count in result.metric_sets.items():
                 print(f"Metric chart: wrote panels for {set_count} set(s) to {out_path}")
+        if result.mutation_plugin_results:
+            for plugin_id, outputs in result.mutation_plugin_results.items():
+                print(f"Mutation plugin {plugin_id}: wrote {len(outputs)} file(s)")
 
     if options.wave_chart and result.wave_len is not None:
         print(f"Wave chart: wrote 2 panels for {result.wave_len} entropy bytes to {options.wave_chart}")
@@ -245,6 +251,17 @@ def _add_mutation_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--report-only", action="store_true", help="Only print report, no mutations")
     parser.add_argument("--color", choices=["auto", "always", "never"], default="auto", help="Color output mode")
+    parser.add_argument(
+        "--mutation-plugin",
+        default="",
+        help="Comma-separated mutation plugin ids to run.",
+    )
+    parser.add_argument(
+        "--mutation-plugin-param",
+        action="append",
+        default=[],
+        help="Mutation plugin param in plugin.param=value form. Repeat as needed.",
+    )
 
 
 def _add_output_args(parser: argparse.ArgumentParser) -> None:
@@ -278,6 +295,12 @@ def _add_analysis_args(parser: argparse.ArgumentParser) -> None:
         "--analysis",
         default="",
         help="Comma-separated analysis plugin ids to run (e.g. entropy_wave).",
+    )
+    parser.add_argument(
+        "--analysis-param",
+        action="append",
+        default=[],
+        help="Plugin param in plugin.param=value form. Repeat as needed.",
     )
     parser.add_argument("--wave-chart", help="If set, write a 2-panel entropy stream wave chart (byte + bit).")
     parser.add_argument(
@@ -332,11 +355,7 @@ def _run_tui(args: argparse.Namespace) -> int:
         metrics_chart_prefix=args.metrics_chart_prefix or "",
         jobs="" if args.jobs is None else str(args.jobs),
         analysis=args.analysis or "",
-        wave_chart=args.wave_chart or "",
-        sliding_wave_chart=args.sliding_wave_chart or "",
-        wave_window=args.wave_window,
-        dc_heatmap=args.dc_heatmap or "",
-        ac_energy_heatmap=args.ac_energy_heatmap or "",
+        mutation_plugins=args.mutation_plugin or "",
         debug=args.debug,
     )
     run_tui(defaults=defaults)

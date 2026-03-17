@@ -29,6 +29,7 @@ def test_parse_args(monkeypatch) -> None:
     assert args.debug is True
     assert args.overflow_wrap is True
     assert args.wave_window == 256
+    assert args.analysis_param == []
 
 
 def test_parse_args_repeat_alias(monkeypatch) -> None:
@@ -38,6 +39,16 @@ def test_parse_args_repeat_alias(monkeypatch) -> None:
     monkeypatch.setattr("sys.argv", ["prog", "in.jpg", "--repeat", "4", "--mutation-apply", "cumulative"])
     args = cli.parse_args()
     assert args.repeats == 4
+
+
+def test_parse_args_analysis_param(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        ["prog", "in.jpg", "--analysis", "entropy_wave", "--analysis-param", "entropy_wave.out_path=wave.png"],
+    )
+    args = cli.parse_args()
+    assert args.analysis == "entropy_wave"
+    assert args.analysis_param == ["entropy_wave.out_path=wave.png"]
 
 
 def _base_args() -> dict:
@@ -62,6 +73,9 @@ def _base_args() -> dict:
         metrics_chart_prefix=None,
         jobs=None,
         analysis="",
+        analysis_param=[],
+        mutation_plugin="",
+        mutation_plugin_param=[],
         wave_chart=None,
         sliding_wave_chart=None,
         wave_window=256,
@@ -204,6 +218,9 @@ def test_main_success_and_validation_error(monkeypatch, tmp_path: Path, tiny_jpe
         metrics_chart_prefix=None,
         jobs=None,
         analysis="",
+        analysis_param=[],
+        mutation_plugin="",
+        mutation_plugin_param=[],
         wave_chart=None,
         sliding_wave_chart=None,
         wave_window=256,
@@ -245,6 +262,9 @@ def test_main_wave_only_skips_mutation(monkeypatch, tmp_path: Path, tiny_jpeg_pa
         metrics_chart_prefix=None,
         jobs=None,
         analysis="",
+        analysis_param=[],
+        mutation_plugin="",
+        mutation_plugin_param=[],
         wave_chart=str(tmp_path / "wave.png"),
         sliding_wave_chart=None,
         wave_window=256,
