@@ -22,6 +22,8 @@ def analysis_deps(metric: str) -> Tuple[Any, Any, Any, Any]:
     """
     try:
         from PIL import Image
+        import matplotlib
+        matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
         import numpy as np
         structural_similarity = None

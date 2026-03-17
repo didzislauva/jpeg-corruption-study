@@ -51,6 +51,7 @@ def to_run_options(args: argparse.Namespace) -> RunOptions:
         metrics=args.metrics,
         metrics_chart_prefix=args.metrics_chart_prefix,
         jobs=args.jobs,
+        analysis=args.analysis,
         wave_chart=args.wave_chart,
         sliding_wave_chart=args.sliding_wave_chart,
         wave_window=args.wave_window,
@@ -273,6 +274,11 @@ def _add_output_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_analysis_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--analysis",
+        default="",
+        help="Comma-separated analysis plugin ids to run (e.g. entropy_wave).",
+    )
     parser.add_argument("--wave-chart", help="If set, write a 2-panel entropy stream wave chart (byte + bit).")
     parser.add_argument(
         "--sliding-wave-chart",
@@ -325,6 +331,7 @@ def _run_tui(args: argparse.Namespace) -> int:
         metrics=args.metrics,
         metrics_chart_prefix=args.metrics_chart_prefix or "",
         jobs="" if args.jobs is None else str(args.jobs),
+        analysis=args.analysis or "",
         wave_chart=args.wave_chart or "",
         sliding_wave_chart=args.sliding_wave_chart or "",
         wave_window=args.wave_window,

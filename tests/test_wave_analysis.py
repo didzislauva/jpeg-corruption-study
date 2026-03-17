@@ -87,3 +87,9 @@ def test_wave_deps_guard(monkeypatch) -> None:
     monkeypatch.setattr("builtins.__import__", fake_import)
     with pytest.raises(RuntimeError):
         wa.wave_deps()
+
+
+def test_wave_deps_forces_agg_backend() -> None:
+    pytest.importorskip("matplotlib")
+    _np, plt = wa.wave_deps()
+    assert plt.get_backend().lower() == "agg"

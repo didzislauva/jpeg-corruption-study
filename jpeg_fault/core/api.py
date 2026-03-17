@@ -14,8 +14,11 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
+from .analysis_registry import get_plugin, load_plugins
+from .analysis_types import AnalysisContext
 from .debug import debug_log
 from .dct_analysis import write_ac_energy_heatmap, write_dc_heatmap
+from .format_detect import detect_format
 from .jpeg_parse import parse_jpeg
 from .media import write_gif
 from .models import EntropyRange, Segment
@@ -51,6 +54,7 @@ class RunOptions:
     metrics: str
     metrics_chart_prefix: Optional[str]
     jobs: Optional[int]
+    analysis: str
     wave_chart: Optional[str]
     sliding_wave_chart: Optional[str]
     wave_window: int
@@ -68,6 +72,7 @@ class RunResult:
     gif_frames: Optional[int]
     ssim_sets: Optional[int]
     metric_sets: Dict[str, int]
+    plugin_results: Dict[str, List[str]]
     wave_len: Optional[int]
     sliding_len: Optional[int]
     dc_blocks: Optional[Tuple[int, int]]
@@ -251,7 +256,8 @@ def run(args: RunOptions, emit_report: bool = True) -> RunResult:
     if emit_report:
         print_report(args.input_path, data, segments, entropy_ranges, args.color)
 
-    if args.report_only:
+    plugin_ids = _parse_analysis_list(args.analysis)
+    if args.report_only and not plugin_ids:
         return _empty_result()
 
     _validate_args_or_raise(args)
@@ -261,6 +267,7 @@ def run(args: RunOptions, emit_report: bool = True) -> RunResult:
         args, data, entropy_ranges, source_only_mode
     )
     wave_len, sliding_len, dc_blocks, ac_blocks = _run_source_only(args, data, entropy_ranges)
+    plugin_results = _run_plugins(args, plugin_ids, mutation_count)
 
     debug_log(args.debug, f"Total runtime: {time.perf_counter() - t_start:.2f}s")
     return RunResult(
@@ -268,6 +275,7 @@ def run(args: RunOptions, emit_report: bool = True) -> RunResult:
         gif_frames=gif_frames,
         ssim_sets=ssim_sets,
         metric_sets=metric_sets,
+        plugin_results=plugin_results,
         wave_len=wave_len,
         sliding_len=sliding_len,
         dc_blocks=dc_blocks,
@@ -296,6 +304,7 @@ def _empty_result() -> RunResult:
         gif_frames=None,
         ssim_sets=None,
         metric_sets={},
+        plugin_results={},
         wave_len=None,
         sliding_len=None,
         dc_blocks=None,
@@ -322,6 +331,33 @@ def _is_source_only_mode(args: RunOptions) -> bool:
         args.wave_chart or args.sliding_wave_chart or args.dc_heatmap or args.ac_energy_heatmap
     )
     return source_only_outputs and not mutation_dependent_outputs
+
+
+def _parse_analysis_list(spec: str) -> List[str]:
+    if not spec:
+        return []
+    parts = [part.strip() for part in spec.split(",")]
+    return [part for part in parts if part]
+
+
+def _run_plugins(args: RunOptions, plugin_ids: List[str], mutation_count: int) -> Dict[str, List[str]]:
+    if not plugin_ids:
+        return {}
+    load_plugins(debug=args.debug)
+    fmt = detect_format(args.input_path)
+    context = AnalysisContext(output_dir=args.output_dir, debug=args.debug)
+    results: Dict[str, List[str]] = {}
+    for plugin_id in plugin_ids:
+        plugin = get_plugin(plugin_id)
+        if plugin is None:
+            raise ValueError(f"Unknown analysis plugin: {plugin_id}")
+        if fmt not in plugin.supported_formats:
+            raise ValueError(f"Plugin {plugin_id} does not support format {fmt}")
+        if plugin.requires_mutations and mutation_count == 0:
+            raise ValueError(f"Plugin {plugin_id} requires mutations, but none were generated.")
+        result = plugin.run(args.input_path, context)
+        results[plugin_id] = result.outputs
+    return results
 
 
 def _maybe_run_mutations(

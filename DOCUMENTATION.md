@@ -7,8 +7,12 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Added two mutation modes: `ff` and `00` (direct replacement).
 - Added `--overflow-wrap` to wrap `add1`/`sub1` at byte boundaries.
 - Refactored the CLI to call a new core API layer (`jpeg_fault/core/api.py`).
+- Split the large TUI into `tui_app.py`, `tui_segments_basic.py`, `tui_segments_tables.py`, `tui_segments_appn.py`, and `tui_hex.py`.
+- Added plugin registries for core analysis plugins and TUI plugin panels.
+- Fixed TUI plugin panel initialization to respect Textual's real widget lifecycle.
+- Forced chart/heatmap modules onto the matplotlib `Agg` backend to avoid TUI worker thread crashes.
 - Updated tests and docs.
-- Tests pass.
+- Current test baseline: `88 passed`.
 
 ## End-To-End Wiring (How It All Connects)
 - `jpg_fault_tolerance.py` is the executable entrypoint and calls `jpeg_fault.core.cli.main()`.
@@ -22,6 +26,12 @@ This document is an extended, file-by-file reference for all Python classes and 
 - `jpeg_fault/core/wave_analysis.py` writes entropy stream wave charts.
 - `jpeg_fault/core/dct_analysis.py` writes DC/AC energy heatmaps.
 - `jpeg_fault/core/debug.py` provides lightweight debug logging and optional function instrumentation.
+- `jpeg_fault/core/tui_app.py` owns the main Textual app shell and orchestration for the TUI.
+- `jpeg_fault/core/tui_segments_basic.py` owns APP0/SOF0/DRI TUI workspaces.
+- `jpeg_fault/core/tui_segments_tables.py` owns DHT/DQT TUI workspaces.
+- `jpeg_fault/core/tui_segments_appn.py` owns APP1/APP2 and generic APPn TUI workspaces.
+- `jpeg_fault/core/tui_hex.py` owns the full-file hex pane.
+- `jpeg_fault/core/analysis_registry.py` and `jpeg_fault/core/tui_plugin_registry.py` support pluggable analyses and TUI tabs.
 
 ## File: `jpg_fault_tolerance.py`
 **Purpose:** Thin entrypoint script.
@@ -160,7 +170,7 @@ Tie-in:
 **Purpose:** Metric computation (SSIM/PSNR/MSE/MAE) and chart generation.
 
 Dependency helpers:
-- `analysis_deps(metric: str) -> Tuple[Any, Any, Any, Any]`: Imports Pillow/matplotlib/numpy/scikit-image as needed.
+- `analysis_deps(metric: str) -> Tuple[Any, Any, Any, Any]`: Imports Pillow/matplotlib/numpy/scikit-image as needed and forces matplotlib to use `Agg`.
 
 Parsing and validation:
 - `parse_metrics_list(spec: str) -> List[str]`: Parses `--metrics`.
@@ -200,7 +210,7 @@ Tie-in:
 **Purpose:** Entropy stream wave and sliding-wave charts.
 
 Functions:
-- `wave_deps() -> Tuple[Any, Any]`: Imports numpy/matplotlib with helpful error.
+- `wave_deps() -> Tuple[Any, Any]`: Imports numpy/matplotlib with helpful error and forces matplotlib to use `Agg`.
 - `entropy_bytes(data: bytes, entropy_ranges: Sequence[EntropyRange]) -> bytes`: Concatenates entropy stream.
 - `bytes_to_bit_array(stream: bytes, np: Any) -> Any`: Converts to bit array.
 - `maybe_downsample(series: Any, max_points: int, np: Any) -> Tuple[Any, int]`: Downsampling helper.
@@ -216,7 +226,7 @@ Tie-in:
 **Purpose:** 8x8 DCT-based heatmaps computed from decoded image luminance.
 
 Functions:
-- `dct_deps() -> Tuple[Any, Any, Any]`: Imports Pillow/matplotlib/numpy with error.
+- `dct_deps() -> Tuple[Any, Any, Any]`: Imports Pillow/matplotlib/numpy with error and forces matplotlib to use `Agg`.
 - `load_luma(path: str, np: Any, image_module: Any) -> Any`: Converts RGB to luma.
 - `crop_to_block_grid(y_plane: Any, np: Any) -> Any`: Crops to multiples of 8.
 - `dct_basis_8(np: Any) -> Any`: Precomputes 8x8 DCT basis.
@@ -257,6 +267,20 @@ Functions:
 
 Commands:
 - `insert-appn`: Insert a custom APPn segment with payload hex/file and optional identifier.
+
+## Current TUI / Plugin State
+
+- Dynamic plugin panels are created in the main TUI shell and populated only after the widget tree is ready.
+- This fixed the earlier `TabbedContent.add_pane()` / `NoMatches(ContentTabs)` startup failure.
+- TUI plugin menu insertion now uses the real `ListView` append-style path, with compatibility fallback only for test doubles.
+- The entropy-wave plugin is the current built-in example of an analysis plugin with a dedicated TUI panel.
+
+## Remaining Work
+
+- The TUI remains the largest maintenance hotspot by far.
+- Repeated editor mechanics across SOF0/DRI/DHT/DQT are still not abstracted enough.
+- Test coverage is now good for helper-level TUI behavior, but still light on full interactive/runtime flows.
+- The plugin framework exists and is stable enough to continue building on, but it still needs more real plugins and more end-to-end UI coverage.
 
 ## File: `jpeg_fault/core/api.py`
 **Purpose:** Stable, programmatic API that mirrors CLI behavior and can be reused by TUI/GUI.

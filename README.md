@@ -149,6 +149,7 @@ The TUI includes:
 - APP2 ICC profile decoder with editable header/tags and live hex updates
 - DQT tab with per-segment workspaces: bytes/info on the left, grid/zigzag/stats/usage/heatmap/edit views on the right
 - Tools tab with a custom APPn writer
+- Plugin panels for analysis-specific tools (currently includes an entropy-wave output panel)
 
 ## TUI Notes
 
@@ -165,6 +166,23 @@ The TUI includes:
 - Info → Hex provides a full-file hex view with segment coloring and a clickable legend.
 - Structured editors for SOF0, DRI, DHT, and DQT refresh the byte-level preview live.
 - DQT and DHT structured editors keep the active editor stable while typing; the alternate raw/structured editor syncs when switching modes.
+- Plugin panels are initialized after the Textual widget tree is ready; this fixed earlier startup crashes around dynamic `TabbedContent` population.
+- Chart-producing analyses now force matplotlib onto the `Agg` backend so TUI-triggered runs do not hit Tk/thread crashes like `Tcl_AsyncDelete`.
+- Exit the TUI with `q`. If the terminal is left in a bad state after an external crash, `reset` restores it.
+
+## Current Status
+
+- Core CLI/API, parser, mutation logic, reporting, and source-only analysis paths are working.
+- The fullscreen TUI starts successfully and the plugin panel initialization path is fixed.
+- The entropy-wave plugin can be launched from the TUI without the previous Tk/thread crash.
+- Current automated baseline: `88 passed` via `../env/bin/pytest`.
+
+## What Still Needs Work
+
+- The TUI is still the highest-maintenance part of the repo and remains the main refactor target.
+- Large editor/workspace mixins still contain repeated save/preview/mode-switch mechanics.
+- Plugin coverage is still narrow; the plugin framework exists, but only a small amount of real plugin functionality is wired today.
+- More runtime-oriented TUI tests would still be valuable beyond the current fake-widget coverage.
 
 ### Generate mutations
 

@@ -15,11 +15,23 @@ The repository has a good high-level split in `jpeg_fault/core/`:
 - `mutate.py` for entropy-byte mutation logic
 - `api.py` for orchestration
 - `cli.py` for CLI wiring
-- `tui.py` for the Textual UI
+- `tui_app.py` plus TUI mixin modules for the Textual UI
 
-The main structural problem is now `jpeg_fault/core/tui.py`.
+Recent fixes completed:
 
-It is large and has grown by copy-adaptation:
+- Plugin menu insertion now matches the real `ListView` API.
+- Plugin panel initialization now respects Textual's widget lifecycle.
+- Chart-producing analyses force matplotlib to `Agg`, preventing TUI-thread Tk crashes.
+- Current automated baseline is `88 passed` via `../env/bin/pytest`.
+
+The main structural problem is now the combined TUI surface:
+
+- `jpeg_fault/core/tui_app.py`
+- `jpeg_fault/core/tui_segments_basic.py`
+- `jpeg_fault/core/tui_segments_tables.py`
+- `jpeg_fault/core/tui_segments_appn.py`
+
+These files are still large and have grown by copy-adaptation:
 
 - APP0 has its own editor/workflow
 - APP1 and APP2 have their own editor/workflow
@@ -179,11 +191,11 @@ Suggested ordering:
 
 Right now related methods are spread out enough that it costs too much context to make safe edits.
 
-### 6. Consider Splitting `tui.py`
+### 6. Keep The TUI Split Coherent
 
-If the file is still too large after helper extraction, split it.
+The old `tui.py` split has already happened. The next step is to make the split cleaner internally, not to split again blindly.
 
-Good split targets:
+Current split targets already in place:
 
 - `tui_app.py` for `JpegFaultTui`
 - `tui_segments_basic.py` for APP0/SOF0/DRI
@@ -191,9 +203,11 @@ Good split targets:
 - `tui_segments_appn.py` for APP1/APP2
 - `tui_hex.py` for full hex pane
 
-Only do this if the split is coherent and doesn’t create circular imports or awkward monkeypatch-heavy tests.
+What still matters:
 
-Do not split just to split.
+- reduce coupling between `tui_app.py` and mixins
+- move more common mechanics out of per-segment code
+- avoid growing test-only compatibility hacks into the main flow
 
 ### 7. Add Better Parser-Level Structures For Segment Editors
 
@@ -258,6 +272,16 @@ After refactoring, update all relevant Markdown docs if behavior or internal org
 - `prompt.md`
 
 Keep them aligned with actual code.
+
+## Suggested Next Session Focus
+
+Do not spend the next session re-fixing the plugin/Tk crash unless it reproduces again with a new traceback. That specific problem has been addressed.
+
+The best next work is:
+
+1. Extract more shared editor/save/preview mechanics from the TUI segment mixins.
+2. Add a few more plugin panels or analysis actions now that the plugin shell is stable.
+3. Add stronger runtime-oriented TUI tests where possible, especially around plugin execution and panel switching.
 
 ## Concrete Deliverables
 

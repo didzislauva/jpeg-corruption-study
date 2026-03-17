@@ -88,6 +88,47 @@ All real logic lives under:
 - [debug.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/debug.py)
   Minimal debug logger.
 
+- [tui_app.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/tui_app.py)
+  Main Textual application shell and top-level TUI orchestration.
+
+- [tui_segments_basic.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/tui_segments_basic.py)
+  APP0, SOF0, and DRI TUI workspaces.
+
+- [tui_segments_tables.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/tui_segments_tables.py)
+  DHT and DQT TUI workspaces.
+
+- [tui_segments_appn.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/tui_segments_appn.py)
+  APP1, APP2, and generic APPn TUI workspaces.
+
+- [tui_hex.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/tui_hex.py)
+  Full-file hex pane support.
+
+- [analysis_registry.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/analysis_registry.py)
+  Analysis plugin registry and loader.
+
+- [tui_plugin_registry.py](/home/didzis/Projects/jpgInvestigation/jpeg_fault/core/tui_plugin_registry.py)
+  TUI plugin panel registry.
+
+
+## Current Status Snapshot
+
+- CLI/API flow is stable.
+- TUI startup is currently working.
+- Plugin panel lifecycle issues in the TUI were fixed in this session.
+- Chart-producing analyses now force matplotlib to the headless `Agg` backend to avoid Tk/thread crashes from TUI workers.
+- Current test baseline: `88 passed` using `../env/bin/pytest`.
+
+
+## Remaining Priority
+
+The biggest remaining risk is still TUI maintainability, not parser correctness or CLI orchestration.
+
+What is left:
+
+- reduce repeated editor mechanics across SOF0/DRI/DHT/DQT
+- improve runtime-oriented TUI/plugin coverage beyond fake widgets
+- extend the plugin system with more real plugin panels now that the shell is stable
+
 
 ## Core Data Model
 

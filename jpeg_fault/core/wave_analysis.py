@@ -17,6 +17,8 @@ def wave_deps() -> Tuple[Any, Any]:
     Load optional dependencies for wave chart generation.
     """
     try:
+        import matplotlib
+        matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
         import numpy as np
     except ImportError as e:

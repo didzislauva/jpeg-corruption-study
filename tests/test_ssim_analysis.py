@@ -229,3 +229,9 @@ def test_analysis_deps_import_guard() -> None:
         assert "SSIM charts require" in str(e)
         return
     assert len(deps) == 4
+
+
+def test_analysis_deps_forces_agg_backend() -> None:
+    pytest.importorskip("matplotlib")
+    _np, plt, _ssim, _image = sa.analysis_deps("psnr")
+    assert plt.get_backend().lower() == "agg"

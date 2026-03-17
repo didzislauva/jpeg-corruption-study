@@ -13,6 +13,7 @@ from pathlib import Path
 from pprint import pformat
 from typing import Callable, Optional, Tuple
 import ast
+from collections import defaultdict
 
 try:
     import piexif
@@ -40,10 +41,15 @@ from textual.widgets import (
     TabPane,
     TextArea,
 )
+from textual.widget import Widget
 from textual.worker import Worker, WorkerState
 from rich.text import Text
 
 from . import api
+from .analysis_registry import all_plugins, get_plugin, load_plugins
+from .analysis_types import AnalysisContext
+from .format_detect import detect_format
+from .tui_plugin_registry import all_tui_plugins
 from .jpeg_parse import (
     build_dri_payload,
     build_dht_payload,
@@ -98,6 +104,7 @@ class TuiDefaults:
     metrics: str = "ssim"
     metrics_chart_prefix: str = ""
     jobs: str = ""
+    analysis: str = ""
     wave_chart: str = ""
     sliding_wave_chart: str = ""
     wave_window: int = 256
@@ -201,6 +208,11 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     sof0_original_payload: Optional[bytes] = None
     sof0_preview_payload: Optional[bytes] = None
     sof0_dirty = reactive(False)
+    plugin_ids: list[str] = []
+    plugin_checkbox_ids: dict[str, str] = {}
+    plugins_render_counter = reactive(0)
+    plugin_panels: dict[str, VerticalScroll] = {}
+    plugin_panel_tabs: dict[str, TabbedContent] = {}
 
     def __init__(self, defaults: Optional[TuiDefaults] = None) -> None:
         super().__init__()
@@ -216,6 +228,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
                 yield ListItem(Label("Mutation"), id="menu-mutation")
                 yield ListItem(Label("Strategy"), id="menu-strategy")
                 yield ListItem(Label("Outputs"), id="menu-outputs")
+                yield ListItem(Label("Plugins"), id="menu-plugins")
                 yield ListItem(Label("Run"), id="menu-run")
             with Container(id="panel"):
                 yield self._build_input_panel()
@@ -224,6 +237,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
                 yield self._build_mutation_panel()
                 yield self._build_strategy_panel()
                 yield self._build_outputs_panel()
+                yield self._build_plugins_panel()
                 yield self._build_run_panel()
         yield Footer()
 
@@ -241,6 +255,8 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         self.call_later(self._apply_dri_mode_visibility)
         self.call_later(self._apply_sof0_mode_visibility)
         self.call_later(lambda: self._set_current_dir(Path(".")))
+        self.call_later(self._refresh_plugins_list)
+        self.call_later(self._init_plugin_panels)
 
     def on_resize(self) -> None:
         if self.preview_path:
@@ -377,6 +393,81 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         panel.display = False
         return panel
 
+    def _build_plugins_panel(self) -> VerticalScroll:
+        panel = VerticalScroll(
+            Label("Plugins", classes="panel-title"),
+            Static("Select analysis plugins to run.", classes="field"),
+            Static("Detected format: unknown", classes="field", id="plugins-format"),
+            Static("Available plugins", classes="field"),
+            Vertical(id="plugins-list"),
+            id="panel-plugins",
+        )
+        panel.display = False
+        return panel
+
+    def _init_plugin_panels(self) -> None:
+        try:
+            menu = self.query_one("#menu", ListView)
+            panel = self.query_one("#panel", Container)
+        except Exception:
+            return
+        load_plugins(debug=False)
+        specs = sorted(list(all_tui_plugins()), key=lambda p: (p.panel_label, p.tab_label, p.id))
+        if not specs:
+            return
+        grouped_specs: dict[str, list] = defaultdict(list)
+        for spec in specs:
+            grouped_specs[spec.panel_id].append(spec)
+        # Build panel containers by panel_id.
+        for panel_key, panel_specs in grouped_specs.items():
+            if panel_key not in self.plugin_panels:
+                panel_id = f"panel-plugin-{panel_key}"
+                tab_id = f"plugin-tabs-{panel_key}"
+                tabs = self._build_plugin_tabs(panel_specs, tab_id)
+                children = [Label(panel_specs[0].panel_label, classes="panel-title")]
+                if isinstance(tabs, Widget):
+                    children.append(tabs)
+                vs = VerticalScroll(*children, id=panel_id)
+                if not isinstance(tabs, Widget):
+                    try:
+                        vs.mount(tabs)
+                    except Exception:
+                        # Tests may patch TabbedContent with a lightweight fake object.
+                        pass
+                vs.display = False
+                panel.mount(vs)
+                self.plugin_panels[panel_key] = vs
+                self.plugin_panel_tabs[panel_key] = tabs
+                self._append_list_view_item(
+                    menu,
+                    ListItem(Label(panel_specs[0].panel_label), id=f"menu-plugin-{panel_key}"),
+                )
+            self.call_after_refresh(self._populate_plugin_panel_tabs, panel_key, panel_specs)
+
+    def _build_plugin_tabs(self, _panel_specs: list, tab_id: str) -> object:
+        return TabbedContent(id=tab_id)
+
+    def _populate_plugin_panel_tabs(self, panel_key: str, panel_specs: list) -> None:
+        tabs = self.plugin_panel_tabs.get(panel_key)
+        if not tabs:
+            return
+        if getattr(tabs, "_plugin_tabs_loaded", False):
+            return
+        for spec in panel_specs:
+            tabs.add_pane(TabPane(spec.tab_label, spec.build_tab(self)))
+        setattr(tabs, "_plugin_tabs_loaded", True)
+
+    def _append_list_view_item(self, list_view: object, item: ListItem) -> None:
+        append = getattr(list_view, "append", None)
+        if callable(append):
+            append(item)
+            return
+        add_item = getattr(list_view, "add_item", None)
+        if callable(add_item):
+            add_item(item)
+            return
+        raise AttributeError("List view does not support append or add_item")
+
     def _build_run_panel(self) -> VerticalScroll:
         panel = VerticalScroll(
             Label("Run", classes="panel-title"),
@@ -401,6 +492,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         input_widget.value = str(event.path)
         self._update_input_preview(str(event.path))
         self._auto_load_info()
+        self._refresh_plugins_list()
 
     @on(DirectoryTree.DirectorySelected)
     def _on_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
@@ -425,6 +517,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         input_widget.value = path
         self._update_input_preview(path)
         self._auto_load_info()
+        self._refresh_plugins_list()
         self._mark_app0_dirty(False)
 
     @on(Input.Changed, "#input-path")
@@ -438,6 +531,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             return
         self._update_input_preview(path)
         self._auto_load_info()
+        self._refresh_plugins_list()
 
     @on(ListView.Selected)
     def _on_menu_selected(self, event: ListView.Selected) -> None:
@@ -454,8 +548,13 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             self._show_panel("strategy")
         elif item_id == "menu-outputs":
             self._show_panel("outputs")
+        elif item_id == "menu-plugins":
+            self._show_panel("plugins")
         elif item_id == "menu-run":
             self._show_panel("run")
+        elif item_id.startswith("menu-plugin-"):
+            panel_id = item_id.replace("menu-plugin-", "", 1)
+            self._show_panel(f"plugin-{panel_id}")
 
     def _show_panel(self, name: str) -> None:
         self.current_panel = name
@@ -465,7 +564,10 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         self.query_one("#panel-mutation").display = name == "mutation"
         self.query_one("#panel-strategy").display = name == "strategy"
         self.query_one("#panel-outputs").display = name == "outputs"
+        self.query_one("#panel-plugins").display = name == "plugins"
         self.query_one("#panel-run").display = name == "run"
+        for panel_id, panel in self.plugin_panels.items():
+            panel.display = name == f"plugin-{panel_id}"
 
     def _init_info_tabs(self) -> None:
         """
@@ -641,6 +743,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         metrics = self.query_one("#metrics", Input).value.strip() or "ssim"
         metrics_prefix = self.query_one("#metrics-prefix", Input).value.strip()
         jobs = self._get_optional_int(self.query_one("#jobs", Input).value, "Jobs")
+        analysis = self._selected_plugins_csv()
         wave_chart = self.query_one("#wave-chart", Input).value.strip()
         sliding_wave_chart = self.query_one("#sliding-wave-chart", Input).value.strip()
         wave_window = self._get_int(self.query_one("#wave-window", Input).value, "Wave window")
@@ -667,6 +770,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             metrics=metrics,
             metrics_chart_prefix=metrics_prefix or None,
             jobs=jobs,
+            analysis=analysis,
             wave_chart=wave_chart or None,
             sliding_wave_chart=sliding_wave_chart or None,
             wave_window=wave_window,
@@ -674,6 +778,55 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             ac_energy_heatmap=ac_heatmap or None,
             debug=debug,
         )
+
+    def _refresh_plugins_list(self) -> None:
+        try:
+            list_container = self.query_one("#plugins-list", Vertical)
+            fmt_label = self.query_one("#plugins-format", Static)
+            input_path = self.query_one("#input-path", Input).value.strip()
+        except Exception:
+            return
+        for child in list(list_container.children):
+            child.remove()
+        load_plugins(debug=False)
+        fmt = "unknown"
+        if input_path and Path(input_path).exists():
+            try:
+                fmt = detect_format(input_path)
+            except Exception:
+                fmt = "unknown"
+        fmt_label.update(f"Detected format: {fmt}")
+        plugins = sorted(list(all_plugins()), key=lambda p: p.id)
+        self.plugin_ids = [plugin.id for plugin in plugins]
+        self.plugins_render_counter += 1
+        render_id = self.plugins_render_counter
+        self.plugin_checkbox_ids = {}
+        if not plugins:
+            list_container.mount(Static("No plugins registered.", classes="field"))
+            return
+        selected_defaults = {p.strip() for p in self.defaults.analysis.split(",") if p.strip()}
+        for plugin in plugins:
+            formats = ", ".join(sorted(plugin.supported_formats))
+            label = f"{plugin.id}: {plugin.label} (formats: {formats})"
+            cb = Checkbox(label, value=(plugin.id in selected_defaults))
+            cb.id = f"plugin-{plugin.id}-{render_id}"
+            cb.disabled = fmt not in plugin.supported_formats
+            list_container.mount(cb)
+            self.plugin_checkbox_ids[plugin.id] = cb.id
+
+    def _selected_plugins_csv(self) -> str:
+        selected: list[str] = []
+        for plugin_id in self.plugin_ids:
+            try:
+                cb_id = self.plugin_checkbox_ids.get(plugin_id)
+                if not cb_id:
+                    continue
+                cb = self.query_one(f"#{cb_id}", Checkbox)
+            except Exception:
+                continue
+            if cb.value:
+                selected.append(plugin_id)
+        return ",".join(selected)
 
     def _apply_editor_mode_visibility(
         self,
@@ -1190,6 +1343,67 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
 
         self.run_worker(_run, exclusive=True, name="run", group="run", thread=True)
 
+    @on(Button.Pressed, ".plugin-run")
+    def _on_plugin_run_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if not button_id.startswith("plugin-run-"):
+            return
+        plugin_id = button_id.replace("plugin-run-", "", 1)
+        self._run_plugin(plugin_id)
+
+    def _plugin_status(self, plugin_id: str, message: str) -> None:
+        try:
+            status = self.query_one(f"#plugin-{plugin_id}-status", Static)
+        except Exception:
+            return
+        status.update(message)
+
+    def _run_plugin(self, plugin_id: str) -> None:
+        try:
+            input_path = self.query_one("#input-path", Input).value.strip()
+            output_dir = self.query_one("#output-dir", Input).value.strip() or "mutations"
+            debug = self.query_one("#debug", Checkbox).value
+        except Exception:
+            return
+        if not input_path:
+            self._plugin_status(plugin_id, "Input path is required.")
+            return
+        if not Path(input_path).exists():
+            self._plugin_status(plugin_id, f"Input path not found: {input_path}")
+            return
+        load_plugins(debug=debug)
+        plugin = get_plugin(plugin_id)
+        if plugin is None:
+            self._plugin_status(plugin_id, f"Plugin not found: {plugin_id}")
+            return
+        try:
+            fmt = detect_format(input_path)
+        except Exception:
+            fmt = "unknown"
+        if fmt not in plugin.supported_formats:
+            self._plugin_status(plugin_id, f"Unsupported format: {fmt}")
+            return
+        params: dict[str, str] = {}
+        try:
+            out_value = self.query_one(f"#plugin-{plugin_id}-out", Input).value.strip()
+            if out_value:
+                params["out_path"] = out_value
+        except Exception:
+            pass
+        self._plugin_status(plugin_id, "Running...")
+
+        def _run() -> None:
+            context = AnalysisContext(output_dir=output_dir, debug=debug, params=params)
+            try:
+                result = plugin.run(input_path, context)
+            except Exception as exc:
+                self.call_from_thread(self._plugin_status, plugin_id, f"Error: {exc}")
+                return
+            count = len(result.outputs)
+            self.call_from_thread(self._plugin_status, plugin_id, f"Done: {count} output(s)")
+
+        self.run_worker(_run, exclusive=True, name=f"plugin-{plugin_id}", group="plugin", thread=True)
+
     @on(Worker.StateChanged)
     def _on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """
@@ -1214,6 +1428,9 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         if result.metric_sets:
             for path, count in result.metric_sets.items():
                 log.write(f"Metric chart: {path} (sets={count})")
+        if result.plugin_results:
+            for plugin_id, outputs in result.plugin_results.items():
+                log.write(f"Plugin {plugin_id}: {len(outputs)} output(s)")
         if result.wave_len is not None:
             log.write(f"Wave chart bytes: {result.wave_len}")
         if result.sliding_len is not None:

@@ -31,6 +31,7 @@ def test_api_run_report_only(tiny_jpeg_path) -> None:
         metrics="ssim",
         metrics_chart_prefix=None,
         jobs=None,
+        analysis="",
         wave_chart=None,
         sliding_wave_chart=None,
         wave_window=256,

@@ -72,3 +72,9 @@ def test_dct_deps_guard(monkeypatch) -> None:
     monkeypatch.setattr("builtins.__import__", fake_import)
     with pytest.raises(RuntimeError):
         da.dct_deps()
+
+
+def test_dct_deps_forces_agg_backend() -> None:
+    pytest.importorskip("matplotlib")
+    _np, plt, _image = da.dct_deps()
+    assert plt.get_backend().lower() == "agg"
