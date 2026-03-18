@@ -25,3 +25,11 @@ def test_render_full_hex_page_builds_legend() -> None:
     assert widgets["#info-hex-legend"].items
     assert app.hex_legend_offsets
     assert "Page 1/1" in widgets["#hex-page-info"].text
+
+
+def test_style_for_pos_prefers_later_overlay_ranges() -> None:
+    app = JpegFaultTui()
+
+    style = app._style_for_pos(7, [(4, 9, "bright_cyan"), (7, 9, "bold black on grey70")])
+
+    assert style == "bold black on grey70"

@@ -170,7 +170,7 @@ The TUI includes:
 - Input panel with live JPEG preview (ASCII thumbnail), dimensions, and size
 - Info tab with segment list, decoded details, entropy ranges, and full-hex view
 - APP0 editor (simple fields + advanced raw hex) with live preview and save
-- SOF0 tab with frame-header workspace: bytes/info on the left, frame/components/tables/edit views on the right
+- SOFn tab with per-section subtabs; SOF0 keeps the editable frame-header workspace and other SOF markers are shown in read-only frame/components/tables views
 - DRI tab with restart-interval workspace: bytes/info on the left, summary/effect/edit views on the right
 - APPn tab with per-segment subtabs (APP1/APP2 decoded, others shown read-only)
 - DHT tab with per-segment workspaces: bytes/info on the left, table/counts/symbols/usage/codes/edit views on the right
@@ -315,9 +315,10 @@ Plugin contracts are now more isolated than before:
 ## TUI Notes
 
 - Info → Segments includes health checks with OK/WARN/FAIL and reasons.
+- Info → Segments also shows standard JPEG sections not currently present in the file in a muted list.
 - Info → APP0 shows decoded fields with color-matched hex preview.
 - APP0 editor updates the preview live and writes a new file on save.
-- Info → SOF0 shows frame geometry, component sampling/table mapping, and editable frame-header payload views.
+- Info → SOFn groups all SOF markers into subtabs; SOF0 remains editable and other SOF markers are shown as decoded read-only frame views.
 - Info → DRI shows restart interval bytes, decoded effect, and editable payload views.
 - Info → APPn groups all APP segments and auto-selects the first available tab.
 - Info → DHT shows raw bytes plus table, counts, symbols, usage, canonical-code, and edit views per DHT segment.
@@ -326,6 +327,7 @@ Plugin contracts are now more isolated than before:
 - Info → DQT shows raw bytes plus natural-grid, zigzag, stats, usage, heatmap, and edit views per DQT segment.
 - Info → Hex provides a full-file hex view with segment coloring and a clickable legend.
 - Structured editors for SOF0, DRI, DHT, and DQT refresh the byte-level preview live.
+- SOF0, DQT, and DHT structured editors can highlight the corresponding serialized bytes in the left hex view when the caret is on a value.
 - DQT and DHT structured editors keep the active editor stable while typing; the alternate raw/structured editor syncs when switching modes.
 - Plugin panels are initialized after the Textual widget tree is ready; this fixed earlier startup crashes around dynamic `TabbedContent` population.
 - Chart-producing analyses now force matplotlib onto the `Agg` backend so TUI-triggered runs do not hit Tk/thread crashes like `Tcl_AsyncDelete`.
@@ -342,7 +344,7 @@ Plugin contracts are now more isolated than before:
 - In the TUI, AC energy heatmap is launched from the `Graphic Output` plugin tab rather than a dedicated field in the `Outputs` panel.
 - `--dc-heatmap` now dispatches internally through the `dc_heatmap` analysis plugin.
 - `--ac-energy-heatmap` now dispatches internally through the `ac_energy_heatmap` analysis plugin.
-- Current automated baseline: `94 passed` via `../env/bin/pytest`.
+- Current focused TUI/plugin test slices pass under `../env/bin/pytest`.
 
 ## What Still Needs Work
 

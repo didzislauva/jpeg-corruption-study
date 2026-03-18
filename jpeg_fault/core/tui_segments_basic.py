@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 from pprint import pformat
 from typing import Optional, Tuple
@@ -34,21 +35,30 @@ from .jpeg_parse import (
 class TuiSegmentsBasicMixin:
     def _add_sof0_tab(self) -> None:
         tabs = self.query_one("#info-tabs", TabbedContent)
-        tabs.add_pane(TabPane("SOF0", self._build_sof0_pane()))
+        tabs.add_pane(TabPane("SOFn", self._build_sof0_pane()))
+        self._reset_sof_tabs([])
 
     def _add_dri_tab(self) -> None:
         tabs = self.query_one("#info-tabs", TabbedContent)
         tabs.add_pane(TabPane("DRI", self._build_dri_pane()))
 
-    def _build_sof0_pane(self) -> Horizontal:
+    def _build_sof0_pane(self) -> Vertical:
+        return Vertical(
+            Static("SOFn sections (SOF0, SOF1, SOF2, ...)", classes="field"),
+            TabbedContent(id="sof-tabs"),
+            id="sof-panel",
+        )
+
+    def _build_sof_segment_pane(self, key: str, title: str, editable: bool) -> Horizontal:
+        views = "Views: frame, components, tables, edit" if editable else "Views: frame, components, tables"
         return Horizontal(
             VerticalScroll(
-                Static("SOF0 bytes and frame summary", classes="field"),
-                RichLog(id="info-sof0-left", highlight=True, classes="sof-log sof-left"),
+                Static(f"{title} bytes and frame summary", classes="field"),
+                RichLog(id=f"info-{key}-left", highlight=True, classes="sof-log sof-left"),
             ),
             VerticalScroll(
-                Static("Views: frame, components, tables, edit", classes="field"),
-                TabbedContent(id="sof0-tabs"),
+                Static(views, classes="field"),
+                TabbedContent(id=f"{key}-tabs"),
                 classes="sof-right",
             ),
             classes="row",
@@ -69,11 +79,21 @@ class TuiSegmentsBasicMixin:
         )
 
     def _init_sof0_tabs(self) -> None:
-        tabs = self.query_one("#sof0-tabs", TabbedContent)
+        tabs = self.query_one("#sof-tabs", TabbedContent)
+        tabs.clear_panes()
+        pane = TabPane("SOFn", RichLog(id="info-sof-empty", highlight=True))
+        tabs.add_pane(pane)
+        self.query_one("#info-sof-empty", RichLog).write("No SOF segments found.")
+        tabs.show_tab(pane.id)
+
+    def _init_sof_detail_tabs(self, key: str, editable: bool) -> None:
+        tabs = self.query_one(f"#{key}-tabs", TabbedContent)
         tabs.clear_panes()
         for name in ("Frame", "Components", "Tables"):
             pane_id = name.lower()
-            tabs.add_pane(TabPane(name, RichLog(id=f"info-sof0-{pane_id}", highlight=True, classes="sof-log")))
+            tabs.add_pane(TabPane(name, RichLog(id=f"info-{key}-{pane_id}", highlight=True, classes="sof-log")))
+        if not editable:
+            return
         tabs.add_pane(
             TabPane(
                 "Edit",
@@ -91,6 +111,34 @@ class TuiSegmentsBasicMixin:
                 ),
             )
         )
+
+    def _reset_sof_tabs(self, segments) -> list[tuple[str, object, bool]]:
+        sof_tabs = self.query_one("#sof-tabs", TabbedContent)
+        sof_tabs.clear_panes()
+        targets: list[tuple[str, object, bool]] = []
+        sof_segments = [s for s in segments if s.name.startswith("SOF")]
+        if not sof_segments:
+            pane = TabPane("SOFn", RichLog(id="info-sof-empty", highlight=True))
+            sof_tabs.add_pane(pane)
+            self.query_one("#info-sof-empty", RichLog).write("No SOF segments found.")
+            sof_tabs.show_tab(pane.id)
+            return targets
+        first_pane_id = None
+        editable_assigned = False
+        for idx, seg in enumerate(sof_segments, start=1):
+            editable = seg.name == "SOF0" and not editable_assigned
+            key = "sof0" if editable else f"sof-{seg.offset:08X}"
+            label = f"{seg.name} #{idx}" if len(sof_segments) > 1 else seg.name
+            pane = TabPane(label, self._build_sof_segment_pane(key, label, editable))
+            sof_tabs.add_pane(pane)
+            self._init_sof_detail_tabs(key, editable)
+            if first_pane_id is None:
+                first_pane_id = pane.id
+            targets.append((key, seg, editable))
+            editable_assigned = editable_assigned or editable
+        if first_pane_id is not None:
+            sof_tabs.show_tab(first_pane_id)
+        return targets
 
     def _init_dri_tabs(self) -> None:
         tabs = self.query_one("#dri-tabs", TabbedContent)
@@ -372,6 +420,7 @@ class TuiSegmentsBasicMixin:
             return
 
     def _refresh_sof0_preview(self) -> None:
+        self._update_sof0_active_highlight()
         self._refresh_single_segment_preview(
             segment_info=self.sof0_segment_info,
             err_id="sof0-edit-error",
@@ -384,6 +433,94 @@ class TuiSegmentsBasicMixin:
 
     def _set_sof0_preview_payload(self, payload: bytes) -> None:
         self.sof0_preview_payload = payload
+
+    def _update_sof0_active_highlight(self) -> None:
+        self.sof0_active_highlight = None
+        try:
+            if self.query_one("#sof0-advanced-mode", Checkbox).value:
+                return
+            editor = self.query_one("#sof0-struct-edit", TextArea)
+        except Exception:
+            return
+        self.sof0_active_highlight = self._sof0_highlight_from_editor(editor)
+
+    def _sof0_highlight_from_editor(self, editor: TextArea) -> Optional[Tuple[int, int, str, str]]:
+        line_no, col_no = self._text_area_cursor(editor)
+        lines = editor.text.splitlines() or [editor.text]
+        if not lines:
+            return None
+        line_no = max(0, min(line_no, len(lines) - 1))
+        line = lines[line_no]
+        comp_index = self._sof0_component_index(lines, line_no, col_no)
+        for _, start, end, seg_range in self._sof0_line_fields(line, comp_index):
+            if start <= col_no < end:
+                return seg_range
+        return None
+
+    def _text_area_cursor(self, editor: TextArea) -> Tuple[int, int]:
+        cursor = getattr(editor, "cursor_location", (0, 0))
+        if isinstance(cursor, tuple) and len(cursor) >= 2:
+            return int(cursor[0]), int(cursor[1])
+        row = int(getattr(cursor, "row", 0))
+        col = int(getattr(cursor, "column", 0))
+        return row, col
+
+    def _sof0_component_index(self, lines: list[str], line_no: int, col_no: int) -> Optional[int]:
+        current_line = lines[line_no]
+        if any(token in current_line for token in ("'id'", "'h_sampling'", "'v_sampling'", "'quant_table_id'")):
+            prior_lines = "\n".join(lines[:line_no])
+            return len(re.findall(r"\{'id'\s*:", prior_lines))
+        return None
+
+    def _sof0_line_fields(
+        self, line: str, comp_index: Optional[int]
+    ) -> list[tuple[str, int, int, Tuple[int, int, str, str]]]:
+        fields: list[tuple[str, int, int, Tuple[int, int, str, str]]] = []
+        mapping = {
+            "precision_bits": (4, 5, "bold black on grey70", "Active field: sample precision"),
+            "height": (5, 7, "bold black on grey70", "Active field: image height"),
+            "width": (7, 9, "bold black on grey70", "Active field: image width"),
+            "components": (9, 10, "bold black on grey70", "Active field: component count"),
+        }
+        for name, highlight in mapping.items():
+            span = self._sof0_value_span(line, name)
+            if span is not None:
+                fields.append((name, span[0], span[1], highlight))
+        if comp_index is None:
+            return fields
+        comp_base = 10 + comp_index * 3
+        component_mapping = {
+            "id": (comp_base, comp_base + 1, "bold black on grey70", f"Active field: component {comp_index + 1} id"),
+            "h_sampling": (
+                comp_base + 1,
+                comp_base + 2,
+                "bold black on grey70",
+                f"Active field: component {comp_index + 1} sampling byte",
+            ),
+            "v_sampling": (
+                comp_base + 1,
+                comp_base + 2,
+                "bold black on grey70",
+                f"Active field: component {comp_index + 1} sampling byte",
+            ),
+            "quant_table_id": (
+                comp_base + 2,
+                comp_base + 3,
+                "bold black on grey70",
+                f"Active field: component {comp_index + 1} quantization table id",
+            ),
+        }
+        for name, highlight in component_mapping.items():
+            span = self._sof0_value_span(line, name)
+            if span is not None:
+                fields.append((name, span[0], span[1], highlight))
+        return fields
+
+    def _sof0_value_span(self, line: str, name: str) -> Optional[Tuple[int, int]]:
+        match = re.search(rf"'{re.escape(name)}'\s*:\s*([^,\]\}}]+)", line)
+        if match is None:
+            return None
+        return match.start(1), match.end(1)
 
     def _sof0_save_inputs(self) -> Tuple[str, bytes, int]:
         input_path = self.query_one("#input-path", Input).value.strip()
@@ -502,6 +639,10 @@ class TuiSegmentsBasicMixin:
     def _on_sof0_textarea_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id not in {"sof0-struct-edit", "sof0-raw-hex"}:
             return
+        if event.text_area.id == "sof0-struct-edit":
+            self._update_sof0_active_highlight()
+        else:
+            self.sof0_active_highlight = None
         if not self.query_one("#sof0-manual-length", Checkbox).value:
             try:
                 payload = self._build_sof0_payload()
@@ -510,6 +651,15 @@ class TuiSegmentsBasicMixin:
             else:
                 self.query_one("#sof0-length", Input).value = f"{len(payload) + 2:04X}"
         self._refresh_sof0_preview()
+
+    @on(TextArea.SelectionChanged)
+    def _on_sof0_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        if event.text_area.id != "sof0-struct-edit":
+            return
+        self._update_sof0_active_highlight()
+        if self.sof0_segment_info and self.sof0_preview_payload is not None:
+            _, _, length_field, _ = self.sof0_segment_info
+            self._render_sof0_views(self.sof0_segment_info[0], length_field, self.sof0_preview_payload)
 
     @on(TextArea.Changed)
     def _on_dri_textarea_changed(self, event: TextArea.Changed) -> None:
@@ -614,27 +764,58 @@ class TuiSegmentsBasicMixin:
         self._mark_sof0_dirty(False)
         self._render_sof0_views(seg.offset, seg.length_field or 0, payload)
 
+    def _render_sof_segments(self, data: bytes, targets: list[tuple[str, object, bool]]) -> None:
+        editable_found = False
+        for key, seg, editable in targets:
+            if editable:
+                editable_found = True
+                self._render_sof0_segment(data, [seg])
+                continue
+            self._render_sof_segment_views(key, seg.name, seg.marker, data, seg)
+        if not editable_found:
+            self._clear_sof0_editor()
+
+    def _render_sof_segment_views(self, key: str, seg_name: str, marker: int, data: bytes, seg) -> None:
+        left_log = self.query_one(f"#info-{key}-left", RichLog)
+        frame_log = self.query_one(f"#info-{key}-frame", RichLog)
+        comps_log = self.query_one(f"#info-{key}-components", RichLog)
+        tables_log = self.query_one(f"#info-{key}-tables", RichLog)
+        for log in (left_log, frame_log, comps_log, tables_log):
+            log.clear()
+        if seg.payload_offset is None or seg.payload_length is None:
+            left_log.write(f"{seg_name} has no payload.")
+            return
+        payload = data[seg.payload_offset:seg.payload_offset + seg.payload_length]
+        self._render_sof_views_for_key(key, seg_name, marker, seg.offset, seg.length_field or 0, payload)
+
     def _render_sof0_views(self, offset: int, length_field: int, payload: bytes) -> None:
-        left_log = self.query_one("#info-sof0-left", RichLog)
-        frame_log = self.query_one("#info-sof0-frame", RichLog)
-        comps_log = self.query_one("#info-sof0-components", RichLog)
-        tables_log = self.query_one("#info-sof0-tables", RichLog)
+        self._render_sof_views_for_key("sof0", "SOF0", 0xC0, offset, length_field, payload)
+
+    def _render_sof_views_for_key(
+        self, key: str, seg_name: str, marker: int, offset: int, length_field: int, payload: bytes
+    ) -> None:
+        left_log = self.query_one(f"#info-{key}-left", RichLog)
+        frame_log = self.query_one(f"#info-{key}-frame", RichLog)
+        comps_log = self.query_one(f"#info-{key}-components", RichLog)
+        tables_log = self.query_one(f"#info-{key}-tables", RichLog)
         for log in (left_log, frame_log, comps_log, tables_log):
             log.clear()
         info = decode_sof0(payload)
         components = decode_sof_components(payload)
-        self._write_sof0_left_panel(left_log, offset, length_field, payload, info, components)
-        self._write_sof0_frame_tab(frame_log, info)
-        self._write_sof0_components_tab(comps_log, components)
-        self._write_sof0_tables_tab(tables_log, components)
+        self._write_sof_left_panel(key, seg_name, marker, left_log, offset, length_field, payload, info, components)
+        self._write_sof_frame_tab(frame_log, info)
+        self._write_sof_components_tab(comps_log, components)
+        self._write_sof_tables_tab(tables_log, components)
 
-    def _write_sof0_left_panel(self, log: RichLog, offset: int, length_field: int, payload: bytes, info, components) -> None:
-        log.write(f"SOF0 at 0x{offset:08X} length=0x{length_field:04X} payload={len(payload)}")
+    def _write_sof_left_panel(
+        self, key: str, seg_name: str, marker: int, log: RichLog, offset: int, length_field: int, payload: bytes, info, components
+    ) -> None:
+        log.write(f"{seg_name} at 0x{offset:08X} length=0x{length_field:04X} payload={len(payload)}")
         if info:
             log.write(
                 f"Frame: {info['width']}x{info['height']} precision={info['precision_bits']} components={info['components']}"
             )
-        log.write("SOF0 stores the baseline frame header: geometry plus one descriptor per image component.")
+        log.write(f"{seg_name} stores a frame header: geometry plus one descriptor per image component.")
         log.write("Legend:")
         for label, style in [
             ("Marker", "bold yellow"),
@@ -650,38 +831,45 @@ class TuiSegmentsBasicMixin:
                 f"Component {idx}: id={comp['id']} ({self._component_name(comp['id'])}) "
                 f"sampling={comp['h_sampling']}x{comp['v_sampling']} qtable={comp['quant_table_id']}"
             )
-        segment_bytes = b"\xFF\xC0" + length_field.to_bytes(2, "big") + payload
-        for line in self._hex_dump(segment_bytes, 0, len(segment_bytes), self._sof0_ranges(payload)):
+        segment_bytes = bytes([0xFF, marker]) + length_field.to_bytes(2, "big") + payload
+        ranges = self._sof0_ranges(payload) if key == "sof0" else self._sof_base_ranges(payload)
+        for line in self._hex_dump(segment_bytes, 0, len(segment_bytes), ranges):
             log.write(line)
 
     def _sof0_ranges(self, payload: bytes) -> list[Tuple[int, int, str]]:
+        ranges = self._sof_base_ranges(payload)
+        return self._with_sof0_active_highlight(ranges)
+
+    def _sof_base_ranges(self, payload: bytes) -> list[Tuple[int, int, str]]:
         ranges = [(0, 2, "bold yellow"), (2, 4, "bold cyan")]
         if len(payload) < 6:
             return ranges
-        ranges.extend([
-            (4, 5, "magenta"),
-            (5, 9, "bright_cyan"),
-            (9, 10, "bright_yellow"),
-        ])
+        ranges.extend([(4, 5, "magenta"), (5, 9, "bright_cyan"), (9, 10, "bright_yellow")])
         cursor = 10
         while cursor + 3 <= 4 + len(payload):
             ranges.append((cursor, cursor + 3, "green"))
             cursor += 3
         return ranges
 
-    def _write_sof0_frame_tab(self, log: RichLog, info) -> None:
+    def _with_sof0_active_highlight(self, ranges: list[Tuple[int, int, str]]) -> list[Tuple[int, int, str]]:
+        if self.sof0_active_highlight is None:
+            return ranges
+        start, end, style, _ = self.sof0_active_highlight
+        return [*ranges, (start, end, style)]
+
+    def _write_sof_frame_tab(self, log: RichLog, info) -> None:
         if not info:
-            log.write("Could not decode SOF0 frame header.")
+            log.write("Could not decode SOF frame header.")
             return
-        log.write("Baseline frame header")
+        log.write("Frame header")
         log.write(f"  Width: {info['width']}")
         log.write(f"  Height: {info['height']}")
         log.write(f"  Precision: {info['precision_bits']} bits/sample")
         log.write(f"  Components: {info['components']}")
 
-    def _write_sof0_components_tab(self, log: RichLog, components: list[dict[str, int]]) -> None:
+    def _write_sof_components_tab(self, log: RichLog, components: list[dict[str, int]]) -> None:
         if not components:
-            log.write("No SOF0 component descriptors found.")
+            log.write("No SOF component descriptors found.")
             return
         log.write("Per-component frame descriptors")
         for comp in components:
@@ -691,11 +879,11 @@ class TuiSegmentsBasicMixin:
             log.write(f"  Sampling ratio: {comp['h_sampling']}x{comp['v_sampling']}")
             log.write(f"  Quantization table id: {comp['quant_table_id']}")
 
-    def _write_sof0_tables_tab(self, log: RichLog, components: list[dict[str, int]]) -> None:
+    def _write_sof_tables_tab(self, log: RichLog, components: list[dict[str, int]]) -> None:
         if not components:
-            log.write("No SOF0 component descriptors found.")
+            log.write("No SOF component descriptors found.")
             return
-        log.write("Quantization-table references inferred from SOF0 component descriptors.")
+        log.write("Quantization-table references inferred from SOF component descriptors.")
         groups: dict[int, list[dict[str, int]]] = {}
         for comp in components:
             groups.setdefault(comp["quant_table_id"], []).append(comp)
@@ -712,6 +900,7 @@ class TuiSegmentsBasicMixin:
         self.sof0_segment_info = None
         self.sof0_original_payload = None
         self.sof0_preview_payload = None
+        self.sof0_active_highlight = None
         self.query_one("#sof0-raw-hex", TextArea).text = ""
         self.query_one("#sof0-struct-edit", TextArea).text = ""
         self.query_one("#sof0-length", Input).value = ""
@@ -733,6 +922,7 @@ class TuiSegmentsBasicMixin:
         self.query_one("#sof0-raw-hex", TextArea).text = self._bytes_to_hex(payload)
         self.query_one("#sof0-struct-edit", TextArea).text = pformat(struct, width=100, sort_dicts=False)
         self.query_one("#sof0-length", Input).value = f"{length_field:04X}"
+        self._update_sof0_active_highlight()
 
     def _render_dri_segment(self, data: bytes, segments) -> None:
         left_log = self.query_one("#info-dri-left", RichLog)

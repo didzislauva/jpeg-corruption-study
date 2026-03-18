@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pprint import pformat
 from typing import Optional
 
@@ -20,6 +21,7 @@ from textual.widgets import (
 from rich.text import Text
 
 from .jpeg_parse import (
+    JPEG_ZIGZAG_ORDER,
     build_dht_payload,
     build_dqt_payload,
     decode_dht,
@@ -34,6 +36,26 @@ from .jpeg_parse import (
 
 
 class TuiSegmentsTablesMixin:
+    def _text_area_cursor(self, editor: TextArea) -> tuple[int, int]:
+        cursor = getattr(editor, "cursor_location", (0, 0))
+        if isinstance(cursor, tuple) and len(cursor) >= 2:
+            return int(cursor[0]), int(cursor[1])
+        row = int(getattr(cursor, "row", 0))
+        col = int(getattr(cursor, "column", 0))
+        return row, col
+
+    def _value_span_in_line(self, line: str, name: str) -> Optional[tuple[int, int]]:
+        match = re.search(rf"'{re.escape(name)}'\s*:\s*([^,\]\}}]+)", line)
+        if match is None:
+            return None
+        return match.start(1), match.end(1)
+
+    def _number_spans_in_line(self, line: str) -> list[tuple[int, int, int]]:
+        spans: list[tuple[int, int, int]] = []
+        for match in re.finditer(r"-?\d+", line):
+            spans.append((match.start(), match.end(), int(match.group(0))))
+        return spans
+
     def _add_dqt_tab(self) -> None:
         tabs = self.query_one("#info-tabs", TabbedContent)
         tabs.add_pane(TabPane("DQT", self._build_dqt_pane()))
@@ -174,6 +196,10 @@ class TuiSegmentsTablesMixin:
             key = self._dqt_key_from_id(event.text_area.id, "-raw-hex")
         if not key:
             return
+        if event.text_area.id.endswith("-grid-edit"):
+            self._update_dqt_active_highlight(key)
+        else:
+            self.dqt_active_highlight.pop(key, None)
         if not self.query_one(f"#{key}-manual-length", Checkbox).value:
             try:
                 payload = self._build_dqt_payload(key)
@@ -182,6 +208,23 @@ class TuiSegmentsTablesMixin:
             else:
                 self.query_one(f"#{key}-length", Input).value = f"{len(payload) + 2:04X}"
         self._refresh_dqt_preview(key)
+
+    @on(TextArea.SelectionChanged)
+    def _on_dqt_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        key = self._dqt_key_from_id(event.text_area.id, "-grid-edit")
+        if key:
+            self._update_dqt_active_highlight(key)
+            if key in self.dqt_segment_info and key in self.dqt_preview_payload:
+                offset, _, length_field, _ = self.dqt_segment_info[key]
+                self._render_dqt_views(key, self.dqt_preview_payload[key], offset, length_field)
+            return
+        key = self._dht_key_from_id(event.text_area.id, "-table-edit")
+        if not key:
+            return
+        self._update_dht_active_highlight(key)
+        if key in self.dht_segment_info and key in self.dht_preview_payload:
+            offset, _, length_field, _ = self.dht_segment_info[key]
+            self._render_dht_views(key, self.dht_preview_payload[key], offset, length_field)
 
     @on(Button.Pressed)
     def _on_dqt_save(self, event: Button.Pressed) -> None:
@@ -235,6 +278,10 @@ class TuiSegmentsTablesMixin:
             key = self._dht_key_from_id(event.text_area.id, "-raw-hex")
         if not key:
             return
+        if event.text_area.id.endswith("-table-edit"):
+            self._update_dht_active_highlight(key)
+        else:
+            self.dht_active_highlight.pop(key, None)
         if not self.query_one(f"#{key}-manual-length", Checkbox).value:
             try:
                 payload = self._build_dht_payload(key)
@@ -345,14 +392,16 @@ class TuiSegmentsTablesMixin:
         # Keep one decode pass for summaries and one for the full structured views.
         summaries = decode_dht(payload)
         tables = decode_dht_tables(payload)
-        self._write_dht_left_panel(left_log, offset, length_field, payload, summaries, tables)
+        self._write_dht_left_panel(key, left_log, offset, length_field, payload, summaries, tables)
         self._write_dht_tables_tab(tables_log, tables)
         self._write_dht_counts_tab(counts_log, tables)
         self._write_dht_symbols_tab(symbols_log, tables)
         self._write_dht_usage_tab(usage_log, tables)
         self._write_dht_codes_tab(codes_log, tables)
 
-    def _write_dht_left_panel(self, log: RichLog, offset: int, length_field: int, payload: bytes, summaries, tables) -> None:
+    def _write_dht_left_panel(
+        self, key: str, log: RichLog, offset: int, length_field: int, payload: bytes, summaries, tables
+    ) -> None:
         log.write(f"DHT at 0x{offset:08X} length=0x{length_field:04X} payload={len(payload)}")
         log.write(f"Tables in segment: {len(tables)}")
         log.write("JPEG stores canonical Huffman tables as 16 code-length counts followed by symbols.")
@@ -368,10 +417,10 @@ class TuiSegmentsTablesMixin:
         for idx, table in enumerate(summaries, start=1):
             log.write(f"Table {idx}: {', '.join(f'{k}={v}' for k, v in table.items())}")
         segment_bytes = b"\xFF\xC4" + length_field.to_bytes(2, "big") + payload
-        for line in self._hex_dump(segment_bytes, 0, len(segment_bytes), self._dht_ranges(payload)):
+        for line in self._hex_dump(segment_bytes, 0, len(segment_bytes), self._dht_ranges(key, payload)):
             log.write(line)
 
-    def _dht_ranges(self, payload: bytes) -> list[Tuple[int, int, str]]:
+    def _dht_ranges(self, key: str, payload: bytes) -> list[Tuple[int, int, str]]:
         ranges = [(0, 2, "bold yellow"), (2, 4, "bold cyan")]
         payload_idx = 0
         cursor = 4
@@ -393,7 +442,7 @@ class TuiSegmentsTablesMixin:
             payload_idx += total
             cursor = sym_end
             table_idx += 1
-        return ranges
+        return self._with_keyed_active_highlight(ranges, self.dht_active_highlight.get(key))
 
     def _write_dht_tables_tab(self, log: RichLog, tables: list[dict[str, object]]) -> None:
         if not tables:
@@ -531,14 +580,16 @@ class TuiSegmentsTablesMixin:
         # The left panel shows the segment as stored; the right panels show derived views.
         tables = decode_dqt(payload)
         full_tables = decode_dqt_tables(payload)
-        self._write_dqt_left_panel(left_log, offset, length_field, payload, tables, full_tables)
+        self._write_dqt_left_panel(key, left_log, offset, length_field, payload, tables, full_tables)
         self._write_dqt_grid_tab(grid_log, full_tables)
         self._write_dqt_zigzag_tab(zigzag_log, full_tables)
         self._write_dqt_stats_tab(stats_log, full_tables)
         self._write_dqt_usage_tab(usage_log, full_tables)
         self._write_dqt_heatmap_tab(heatmap_log, full_tables)
 
-    def _write_dqt_left_panel(self, log: RichLog, offset: int, length_field: int, payload: bytes, tables, full_tables) -> None:
+    def _write_dqt_left_panel(
+        self, key: str, log: RichLog, offset: int, length_field: int, payload: bytes, tables, full_tables
+    ) -> None:
         log.write(f"DQT at 0x{offset:08X} length=0x{length_field:04X} payload={len(payload)}")
         log.write(f"Tables in segment: {len(full_tables)}")
         log.write("JPEG stores DQT values in zigzag order; analysis views may remap them into natural 8x8 order.")
@@ -553,11 +604,11 @@ class TuiSegmentsTablesMixin:
         for idx, table in enumerate(tables, start=1):
             log.write(f"Table {idx}: {', '.join(f'{k}={v}' for k, v in table.items())}")
         segment_bytes = b"\xFF\xDB" + length_field.to_bytes(2, "big") + payload
-        ranges = self._dqt_ranges(payload, log)
+        ranges = self._dqt_ranges(key, payload, log)
         for line in self._hex_dump(segment_bytes, 0, len(segment_bytes), ranges):
             log.write(line)
 
-    def _dqt_ranges(self, payload: bytes, log: RichLog) -> list[Tuple[int, int, str]]:
+    def _dqt_ranges(self, key: str, payload: bytes, log: RichLog) -> list[Tuple[int, int, str]]:
         ranges = [(0, 2, "bold yellow"), (2, 4, "bold cyan")]
         cursor = 4
         payload_idx = 0
@@ -577,7 +628,17 @@ class TuiSegmentsTablesMixin:
                 ranges.append((table_start + 1, table_end, colors[(len(ranges) // 2) % len(colors)]))
             payload_idx += size
             cursor = table_end
-        return ranges
+        return self._with_keyed_active_highlight(ranges, self.dqt_active_highlight.get(key))
+
+    def _with_keyed_active_highlight(
+        self,
+        ranges: list[Tuple[int, int, str]],
+        highlight: Optional[tuple[int, int, str, str]],
+    ) -> list[Tuple[int, int, str]]:
+        if highlight is None:
+            return ranges
+        start, end, style, _ = highlight
+        return [*ranges, (start, end, style)]
 
     def _write_dqt_grid_tab(self, log: RichLog, tables: list[dict[str, object]]) -> None:
         if not tables:
@@ -746,6 +807,72 @@ class TuiSegmentsTablesMixin:
         self.query_one(f"#{key}-raw-hex", TextArea).text = self._bytes_to_hex(payload)
         self.query_one(f"#{key}-grid-edit", TextArea).text = pformat(tables, width=100, sort_dicts=False)
         self.query_one(f"#{key}-length", Input).value = f"{length_field:04X}"
+        self._update_dqt_active_highlight(key)
+
+    def _update_dqt_active_highlight(self, key: str) -> None:
+        self.dqt_active_highlight.pop(key, None)
+        try:
+            if self.query_one(f"#{key}-advanced-mode", Checkbox).value:
+                return
+            editor = self.query_one(f"#{key}-grid-edit", TextArea)
+        except Exception:
+            return
+        try:
+            payload = self._build_dqt_payload(key)
+        except Exception:
+            payload = self.dqt_preview_payload.get(key, b"")
+        highlight = self._dqt_highlight_from_editor(editor, payload)
+        if highlight is not None:
+            self.dqt_active_highlight[key] = highlight
+
+    def _dqt_highlight_from_editor(
+        self, editor: TextArea, payload: bytes
+    ) -> Optional[tuple[int, int, str, str]]:
+        line_no, col_no = self._text_area_cursor(editor)
+        lines = editor.text.splitlines() or [editor.text]
+        if not lines:
+            return None
+        line_no = max(0, min(line_no, len(lines) - 1))
+        line = lines[line_no]
+        table_index = max(0, len(re.findall(r"\{'id'\s*:", "\n".join(lines[:line_no + 1]))) - 1)
+        layout = self._dqt_table_layout(payload)
+        if table_index >= len(layout):
+            return None
+        table_start, value_width = layout[table_index]
+        for name in ("id", "precision_bits"):
+            span = self._value_span_in_line(line, name)
+            if span is not None and span[0] <= col_no < span[1]:
+                return (table_start, table_start + 1, "bold black on grey70", f"DQT {name}")
+        row_index = self._dqt_grid_row_index(lines, line_no)
+        if row_index is None:
+            return None
+        for value_index, (start, end, _) in enumerate(self._number_spans_in_line(line)):
+            if not (start <= col_no < end):
+                continue
+            natural_index = row_index * 8 + value_index
+            zigzag_index = JPEG_ZIGZAG_ORDER.index(natural_index)
+            byte_start = table_start + 1 + zigzag_index * value_width
+            return (byte_start, byte_start + value_width, "bold black on grey70", "DQT value")
+        return None
+
+    def _dqt_grid_row_index(self, lines: list[str], line_no: int) -> Optional[int]:
+        for idx in range(line_no, -1, -1):
+            if "'grid':" in lines[idx]:
+                return line_no - idx
+        return None
+
+    def _dqt_table_layout(self, payload: bytes) -> list[tuple[int, int]]:
+        layout: list[tuple[int, int]] = []
+        payload_idx = 0
+        cursor = 4
+        while payload_idx < len(payload):
+            header = payload[payload_idx]
+            value_width = 2 if (header >> 4) else 1
+            value_count = 64
+            layout.append((cursor, value_width))
+            payload_idx += 1 + value_count * value_width
+            cursor += 1 + value_count * value_width
+        return layout
 
     def _serialize_dqt_struct_to_payload(self, key: str) -> bytes:
         parsed = ast.literal_eval(self.query_one(f"#{key}-grid-edit", TextArea).text)
@@ -810,6 +937,7 @@ class TuiSegmentsTablesMixin:
         )
 
     def _refresh_dqt_preview(self, key: str) -> None:
+        self._update_dqt_active_highlight(key)
         self._refresh_keyed_segment_preview(
             key=key,
             segment_info=self.dqt_segment_info,
@@ -881,6 +1009,70 @@ class TuiSegmentsTablesMixin:
         self.query_one(f"#{key}-raw-hex", TextArea).text = self._bytes_to_hex(payload)
         self.query_one(f"#{key}-table-edit", TextArea).text = pformat(tables, width=100, sort_dicts=False)
         self.query_one(f"#{key}-length", Input).value = f"{length_field:04X}"
+        self._update_dht_active_highlight(key)
+
+    def _update_dht_active_highlight(self, key: str) -> None:
+        self.dht_active_highlight.pop(key, None)
+        try:
+            if self.query_one(f"#{key}-advanced-mode", Checkbox).value:
+                return
+            editor = self.query_one(f"#{key}-table-edit", TextArea)
+        except Exception:
+            return
+        try:
+            payload = self._build_dht_payload(key)
+        except Exception:
+            payload = self.dht_preview_payload.get(key, b"")
+        highlight = self._dht_highlight_from_editor(editor, payload)
+        if highlight is not None:
+            self.dht_active_highlight[key] = highlight
+
+    def _dht_highlight_from_editor(
+        self, editor: TextArea, payload: bytes
+    ) -> Optional[tuple[int, int, str, str]]:
+        line_no, col_no = self._text_area_cursor(editor)
+        lines = editor.text.splitlines() or [editor.text]
+        if not lines:
+            return None
+        line_no = max(0, min(line_no, len(lines) - 1))
+        line = lines[line_no]
+        table_index = max(0, len(re.findall(r"\{'class'\s*:", "\n".join(lines[:line_no + 1]))) - 1)
+        layout = self._dht_table_layout(payload)
+        if table_index >= len(layout):
+            return None
+        header_start, counts_start, symbols_start = layout[table_index]
+        for name in ("class", "id"):
+            span = self._value_span_in_line(line, name)
+            if span is not None and span[0] <= col_no < span[1]:
+                return (header_start, header_start + 1, "bold black on grey70", f"DHT {name}")
+        if "'counts':" in line:
+            for idx, (start, end, _) in enumerate(self._number_spans_in_line(line)):
+                if start <= col_no < end:
+                    return (counts_start + idx, counts_start + idx + 1, "bold black on grey70", "DHT count")
+        if "'symbols':" in line:
+            for idx, (start, end, _) in enumerate(self._number_spans_in_line(line)):
+                if start <= col_no < end:
+                    return (symbols_start + idx, symbols_start + idx + 1, "bold black on grey70", "DHT symbol")
+        return None
+
+    def _dht_table_layout(self, payload: bytes) -> list[tuple[int, int, int]]:
+        layout: list[tuple[int, int, int]] = []
+        payload_idx = 0
+        cursor = 4
+        while payload_idx + 17 <= len(payload):
+            header_start = cursor
+            payload_idx += 1
+            cursor += 1
+            counts = list(payload[payload_idx:payload_idx + 16])
+            counts_start = cursor
+            payload_idx += 16
+            cursor += 16
+            symbols_start = cursor
+            total = sum(counts)
+            payload_idx += total
+            cursor += total
+            layout.append((header_start, counts_start, symbols_start))
+        return layout
 
     def _serialize_dht_struct_to_payload(self, key: str) -> bytes:
         parsed = ast.literal_eval(self.query_one(f"#{key}-table-edit", TextArea).text)
@@ -944,6 +1136,7 @@ class TuiSegmentsTablesMixin:
     def _refresh_dht_preview(self, key: str) -> None:
         if key not in self.dht_segment_info:
             return
+        self._update_dht_active_highlight(key)
         err = self.query_one(f"#{key}-error", Static)
         warning = None
         try:

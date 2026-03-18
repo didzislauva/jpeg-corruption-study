@@ -29,6 +29,7 @@ class FakeTextArea:
     def __init__(self, text: str = "") -> None:
         self.text = text
         self.display = True
+        self.cursor_location = (0, 0)
 
 
 class FakeInput:

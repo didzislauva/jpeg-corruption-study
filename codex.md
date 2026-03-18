@@ -92,7 +92,7 @@ All real logic lives under:
   Main Textual application shell and top-level TUI orchestration.
 
 - [tui_segments_basic.py](jpeg_fault/core/tui_segments_basic.py)
-  APP0, SOF0, and DRI TUI workspaces.
+  APP0, SOFn, and DRI TUI workspaces.
 
 - [tui_segments_tables.py](jpeg_fault/core/tui_segments_tables.py)
   DHT and DQT TUI workspaces.
@@ -120,6 +120,9 @@ All real logic lives under:
 - `dc_heatmap` and `ac_energy_heatmap` now expose `cmap`, `plane_mode`, and `block_size`, and default unnamed outputs to descriptive filenames in the current working directory.
 - The TUI now launches the migrated wave/DC/AC analyses through the `Graphic Output` plugin tabs instead of the old dedicated Outputs-panel fields.
 - The TUI Mutation page now combines mutation settings, strategy settings, and Run controls, plus a help column with an equivalent CLI command.
+- The TUI Segments pane now lists unused standard JPEG sections in a muted block under the detected segments.
+- SOF0, DQT, and DHT structured editors can highlight the corresponding serialized bytes in their left hex views based on the current value selection.
+- SOF markers are now grouped under an outer SOFn tab with one subtab per frame section.
 
 ## Current Mutation UX Notes
 
@@ -139,7 +142,7 @@ The biggest remaining risk is still TUI maintainability, not parser correctness 
 
 What is left:
 
-- reduce repeated editor mechanics across SOF0/DRI/DHT/DQT
+- reduce repeated editor mechanics across APP1/APP2 and the remaining DHT special cases
 - improve runtime-oriented TUI/plugin coverage beyond fake widgets
 - extend the plugin system with more real plugin panels now that the shell is stable
 - tighten mutation UX/help wording so the TUI explains `sample`, `cumulative`, and `sequential` precisely
@@ -848,7 +851,7 @@ Fallback:
 The project includes a Textual fullscreen TUI:
 
 - Launch with `./jpg_fault_tolerance.py --tui` (alias `--gui`)
-- Left menu: Input/Info/Tools/Mutation/Strategy/Outputs/Run
+- Left menu: Input/Info/Tools/Mutation/Outputs/Plugins
 - File browser shows directories; a JPEG-only list is shown for selection
 - Selecting a JPEG auto-loads Info views and updates the preview
 
@@ -859,7 +862,7 @@ The project includes a Textual fullscreen TUI:
 - Details: per-segment explanations
 - Entropy: scan ranges
 - APP0: decoded fields + colorized hex view
-- SOF0: frame-header workspace with frame/components/tables/edit views
+- SOFn: per-section subtabs; SOF0 keeps frame/components/tables/edit views and other SOF markers are read-only
 - DRI: restart-interval workspace with summary/effect/edit views
 - APPn: per-segment subtabs for APP1 (EXIF) and APP2 (ICC)
 - DHT: per-segment Huffman-table workspaces with bytes/info, counts, symbols, usage, codes, and edit views
@@ -882,10 +885,11 @@ The project includes a Textual fullscreen TUI:
 
 ### SOF0 / DRI / DHT / DQT Editors
 
-- SOF0 has a dedicated frame-header workspace with structured/raw editing and live preview.
+- SOF0 now lives inside the outer SOFn section and keeps a dedicated frame-header workspace with structured/raw editing and live preview.
 - DRI has a dedicated restart-interval workspace with structured/raw editing and live preview.
 - DHT has a dedicated Huffman-table workspace with structured/raw editing and canonical-code/usage views.
 - DQT has a dedicated quantization-table workspace with structured/raw editing, grid/zigzag/stats/usage/heatmap views.
+- SOF0, DQT, and DHT can highlight serialized bytes in the left hex pane when the caret is on a structured-editor value.
 - DHT and DQT keep the active editor stable while typing; raw/structured editor content syncs when switching modes.
 
 ### Tools Tab
@@ -928,9 +932,9 @@ Implementation:
 - Textual TUI is the primary interactive UI (`--tui`), with:
   - File browser + JPEG-only list
   - Live preview panel with dimensions/size
-  - Info tabs (General/Segments/Details/Entropy/APP0/SOF0/DRI/APPn/DHT/DQT/Hex)
+  - Info tabs (General/Segments/Details/Entropy/APP0/SOFn/DRI/APPn/DHT/DQT/Hex)
   - APP0 editor (simple + advanced, live preview, save new file)
-  - SOF0 workspace/editor
+  - SOFn workspace with editable SOF0 and read-only other SOF markers
   - DRI workspace/editor
   - DHT workspace/editor
   - DQT workspace/editor

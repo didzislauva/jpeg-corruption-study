@@ -51,6 +51,7 @@ from .analysis_types import AnalysisContext, PluginParamSpec, validate_plugin_pa
 from .format_detect import detect_format
 from .tui_plugin_registry import all_tui_plugins
 from .jpeg_parse import (
+    MARKER_NAMES,
     build_dri_payload,
     build_dht_payload,
     build_dqt_payload,
@@ -195,10 +196,12 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     dqt_segment_info: dict[str, Tuple[int, int, int, int]] = {}
     dqt_original_payload: dict[str, bytes] = {}
     dqt_preview_payload: dict[str, bytes] = {}
+    dqt_active_highlight: dict[str, Tuple[int, int, str, str]] = {}
     dqt_dirty: dict[str, bool] = {}
     dht_segment_info: dict[str, Tuple[int, int, int, int]] = {}
     dht_original_payload: dict[str, bytes] = {}
     dht_preview_payload: dict[str, bytes] = {}
+    dht_active_highlight: dict[str, Tuple[int, int, str, str]] = {}
     dht_dirty: dict[str, bool] = {}
     dri_segment_info: Optional[Tuple[int, int, int, int]] = None
     dri_original_payload: Optional[bytes] = None
@@ -207,6 +210,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     sof0_segment_info: Optional[Tuple[int, int, int, int]] = None
     sof0_original_payload: Optional[bytes] = None
     sof0_preview_payload: Optional[bytes] = None
+    sof0_active_highlight: Optional[Tuple[int, int, str, str]] = None
     sof0_dirty = reactive(False)
     plugin_ids: list[str] = []
     plugin_checkbox_ids: dict[str, str] = {}
@@ -245,7 +249,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         menu.index = 0
         self._show_panel("input")
         self.call_later(self._init_info_tabs)
-        self.call_later(self._init_sof0_tabs)
         self.call_later(self._init_dri_tabs)
         self.call_later(self._apply_app0_mode_visibility)
         self.call_later(self._apply_dri_mode_visibility)
@@ -1260,6 +1263,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
 
         general, segments_log, details_log, entropy_log = self._info_logs()
         self._clear_info_logs(general, segments_log, details_log, entropy_log)
+        sof_targets = self._reset_sof_tabs(segments)
         appn_targets = self._reset_appn_tabs(segments)
         dqt_targets = self._reset_dqt_tabs(segments)
         dht_targets = self._reset_dht_tabs(segments)
@@ -1272,10 +1276,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         except Exception:
             # APP0 pane not present.
             pass
-        try:
-            self._render_sof0_segment(data, segments)
-        except Exception:
-            pass
+        self._render_sof_segments(data, sof_targets)
         try:
             self._render_dri_segment(data, segments)
         except Exception:
@@ -1335,6 +1336,16 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
                         f"payload={seg.payload_length} total={seg.total_length} health={status}{issue_text}"
                     )
                 )
+        unused = self._unused_segment_names(segments)
+        if unused:
+            log.write("")
+            log.write(Text("Unused sections:", style="grey50"))
+            log.write(Text("  " + ", ".join(unused), style="grey50"))
+
+    def _unused_segment_names(self, segments) -> list[str]:
+        present = {seg.name for seg in segments}
+        known = [MARKER_NAMES[marker] for marker in sorted(MARKER_NAMES)]
+        return [name for name in known if name not in present]
 
     def _write_details(self, log: RichLog, segments, data: bytes) -> None:
         for idx, seg in enumerate(segments):
@@ -1554,7 +1565,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         """
         Return the color style for a given byte position based on ranges.
         """
-        for start, end, style in ranges:
+        for start, end, style in reversed(ranges):
             if start <= pos < end:
                 return style
         return ""

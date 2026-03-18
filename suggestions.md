@@ -20,7 +20,6 @@ Recent baseline that should be preserved:
 - Plugin menu insertion matches the real `ListView` API.
 - Plugin panel initialization respects Textual's widget lifecycle.
 - Chart-producing analyses force matplotlib to `Agg`, preventing TUI-thread Tk crashes.
-- The repo currently passes `94` tests via `../env/bin/pytest -q`.
 - The wave-analysis path is now plugin-first: `--wave-chart` and `--sliding-wave-chart` dispatch through `entropy_wave` and `sliding_wave` internally.
 - `entropy_wave` supports `mode`, `transform`, and optional CSV export.
 - `sliding_wave` supports `window`, `stats`, `transform`, and optional CSV export.
@@ -81,6 +80,12 @@ APP1 and APP2 are still more custom than the SOF0/DRI/DQT editors.
 DHT is only partially on the shared path because its preview flow still has a lenient raw-hex fallback that is not expressed through the generic keyed preview helper.
 
 TUI test coverage is better than before, but it is still mostly fake-widget and unit-style coverage rather than true runtime-heavy Textual coverage.
+
+Recent TUI cleanup has improved consistency in a few places that should now be treated as baseline:
+
+- SOF markers are grouped under a keyed `SOFn` pane instead of assuming a single `SOF0` workspace.
+- SOF0, DQT, and DHT now support value-to-byte highlighting in their structured editors.
+- the Segments pane now shows unused standard JPEG sections in a muted list under the detected segments.
 
 ## Constraints
 
@@ -205,9 +210,9 @@ If starting a refactor session from this note, the best next move is usually:
 3. see whether DHT lenient preview can be folded into the keyed preview helper
 4. add or update tests around those changes before moving on
 
-If starting a plugin-migration session instead, the best next move is usually:
+If starting a plugin-extension session instead, the best next move is usually:
 
-1. leave `wave_analysis.py` as the reusable library layer
-2. migrate another built-in optional analysis onto the plugin path
-3. prefer `dc_heatmap` first and `ac_energy_heatmap` second
+1. leave `wave_analysis.py` and `dct_analysis.py` as reusable analysis-library layers
+2. add another optional analysis through the existing plugin path instead of adding a special-case CLI branch
+3. register a TUI plugin tab only if the analysis has a clear interactive workflow
 4. update `README.md` and `DOCUMENTATION.md` in the same session

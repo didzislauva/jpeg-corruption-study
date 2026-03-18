@@ -14,8 +14,11 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Added a built-in `sliding_wave` analysis plugin with typed params and CSV export.
 - Fixed TUI plugin panel initialization to respect Textual's real widget lifecycle.
 - Forced chart/heatmap modules onto the matplotlib `Agg` backend to avoid TUI worker thread crashes.
+- Added value-to-byte highlighting in structured SOF0, DQT, and DHT editors.
+- Reworked the SOF pane into per-section SOFn subtabs, keeping SOF0 editable and other SOF markers read-only.
+- Added an unused-sections list to the Info → Segments view.
 - Updated tests and docs.
-- Current test baseline: `94 passed`.
+- Current focused TUI/plugin test slices pass.
 
 ## Dependency Model
 - Python 3.8+ is the baseline runtime.
@@ -142,7 +145,7 @@ Current plugin registries:
 - `jpeg_fault/core/mutation_types.py` defines mutation plugin contexts and results.
 - `jpeg_fault/core/debug.py` provides lightweight debug logging and optional function instrumentation.
 - `jpeg_fault/core/tui_app.py` owns the main Textual app shell and orchestration for the TUI.
-- `jpeg_fault/core/tui_segments_basic.py` owns APP0/SOF0/DRI TUI workspaces.
+- `jpeg_fault/core/tui_segments_basic.py` owns APP0/SOFn/DRI TUI workspaces.
 - `jpeg_fault/core/tui_segments_tables.py` owns DHT/DQT TUI workspaces.
 - `jpeg_fault/core/tui_segments_appn.py` owns APP1/APP2 and generic APPn TUI workspaces.
 - `jpeg_fault/core/tui_hex.py` owns the full-file hex pane.
@@ -393,11 +396,13 @@ Commands:
 - The old dedicated TUI Outputs-panel controls for entropy-wave and sliding-wave have been removed; the TUI path for those analyses is now the plugin tabs.
 - The old dedicated TUI Outputs-panel control for DC heatmap has been removed; the TUI path for DC heatmap is now the plugin tab.
 - The old dedicated TUI Outputs-panel control for AC energy heatmap has been removed; the TUI path for AC energy heatmap is now the plugin tab.
+- The SOFn pane now mirrors APPn/DQT/DHT by using one subtab per SOF section.
+- Structured SOF0, DQT, and DHT editors can highlight the corresponding serialized bytes in their left hex views based on the current value selection.
 
 ## Remaining Work
 
 - The TUI remains the largest maintenance hotspot by far.
-- Repeated editor mechanics across SOF0/DRI/DHT/DQT are still not abstracted enough.
+- Repeated editor mechanics across APP1/APP2 and parts of DHT are still not abstracted enough.
 - Test coverage is now good for helper-level TUI behavior, but still light on full interactive/runtime flows.
 - The plugin framework is now a better foundation for future built-in migration, but it still needs more real plugins and more end-to-end UI coverage.
 
@@ -451,9 +456,9 @@ Functions:
 **Purpose:** Textual fullscreen TUI for interactive control.
 
 Features:
-- Left menu for Input/Info/Tools/Mutation/Strategy/Outputs/Run.
+- Left menu for Input/Info/Tools/Mutation/Outputs/Plugins.
 - File browser with JPEG-only list and live preview (ASCII thumbnail + metadata).
-- Info tab with segment list, details, entropy, full-hex view, and APP0/SOF0/DRI/APPn/DHT/DQT decoding.
+- Info tab with segment list, details, entropy, full-hex view, and APP0/SOFn/DRI/APPn/DHT/DQT decoding.
 - Tools tab with APPn insertion helper.
 
 Notable behavior:
@@ -465,11 +470,11 @@ Notable behavior:
 
 ### Info Tab Details
 - **General**: file size, segment count, scan count, total entropy bytes.
-- **Segments**: one-line segment summary plus health status.
+- **Segments**: one-line segment summary plus health status and a muted list of standard JPEG sections not present in the file.
 - **Details**: expanded per-segment explanations (from `report.explain_segment`).
 - **Entropy**: entropy ranges per scan.
 - **APP0**: decoded fields, legend, and colorized hex dump.
-- **SOF0**: frame-header workspace with bytes/info plus frame/components/tables/edit views.
+- **SOFn**: one workspace per SOF marker; SOF0 keeps edit support, other SOF markers are shown in read-only frame/components/tables views.
 - **DRI**: restart-interval workspace with bytes/info plus summary/effect/edit views.
 - **APPn**: per-segment subtabs for APP1/APP2 decoding (others are read-only).
 - **DHT**: per-segment workspaces with bytes/info plus table/counts/symbols/usage/codes/edit views.
@@ -504,10 +509,11 @@ Behavior:
 - Live preview updates the decoded and hex views on every change.
 - Save writes a new file `*_app0_edit.jpg` (or `_app0_edit_N.jpg` if needed).
 
-### SOF0 Workspace (Info → SOF0)
-- Left side shows segment structure, decoded frame geometry, component summaries, and colorized bytes.
-- Right side provides Frame, Components, Tables, and Edit tabs.
-- Edit supports structured frame-header fields or raw payload hex with live preview and save-as-new-file.
+### SOFn Workspace (Info → SOFn)
+- One workspace per SOF marker.
+- SOF0 keeps the editable frame-header workflow with Frame, Components, Tables, and Edit tabs.
+- Non-SOF0 frame markers are shown with read-only Frame, Components, and Tables tabs.
+- The SOF0 structured editor can highlight the corresponding serialized bytes in the left hex pane when the caret is on a value.
 
 ### DRI Workspace (Info → DRI)
 - Left side shows segment structure, decoded restart interval, and colorized bytes.
@@ -524,12 +530,14 @@ Behavior:
 - Left side shows segment structure, decoded summaries, and colorized bytes.
 - Right side provides Tables, Counts, Symbols, Usage, Codes, and Edit tabs.
 - Edit supports either structured Huffman-table dictionaries or raw payload hex.
+- The structured editor can highlight count/symbol/header bytes in the left hex pane when the caret is on a value.
 
 ### DQT Decoder (Info → DQT)
 - One workspace per DQT segment.
 - Left side shows segment structure, decoded summaries, and colorized bytes.
 - Right side provides Grid, Zigzag, Stats, Usage, Heatmap, and Edit tabs.
 - Edit supports either structured natural-order table grids or raw payload hex.
+- The structured editor can highlight the corresponding serialized coefficient/header bytes in the left hex pane when the caret is on a value.
 
 ### Full Hex View (Info → Hex)
 - Shows 512 bytes per page with offset/hex/ASCII columns.

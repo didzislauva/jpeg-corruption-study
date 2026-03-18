@@ -129,6 +129,67 @@ def test_sof0_preview_and_save(tmp_path: Path, rich_jpeg_path: Path, rich_jpeg_b
     assert out_path.read_bytes()[out_seg.payload_offset:out_seg.payload_offset + out_seg.payload_length] == payload
 
 
+def test_sof0_struct_cursor_maps_width_to_highlight() -> None:
+    app = JpegFaultTui()
+    editor = FakeTextArea(
+        "{'precision_bits': 8, 'width': 16, 'height': 8, "
+        "'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0}]}"
+    )
+    editor.cursor_location = (0, editor.text.index(": 16") + 2)
+
+    highlight = app._sof0_highlight_from_editor(editor)
+
+    assert highlight == (7, 9, "bold black on grey70", "Active field: image width")
+
+
+def test_sof0_struct_cursor_on_key_does_not_highlight() -> None:
+    app = JpegFaultTui()
+    editor = FakeTextArea(
+        "{'precision_bits': 8, 'width': 16, 'height': 8, "
+        "'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0}]}"
+    )
+    editor.cursor_location = (0, editor.text.index("'width'") + 2)
+
+    highlight = app._sof0_highlight_from_editor(editor)
+
+    assert highlight is None
+
+
+def test_sof0_struct_cursor_maps_component_fields_to_component_bytes() -> None:
+    app = JpegFaultTui()
+    editor = FakeTextArea(
+        "{'precision_bits': 8,\n"
+        " 'width': 16,\n"
+        " 'height': 8,\n"
+        " 'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0},\n"
+        "                {'id': 2, 'h_sampling': 1, 'v_sampling': 1, 'quant_table_id': 0}]}"
+    )
+    editor.cursor_location = (4, editor.text.splitlines()[4].index(": 1, 'v_sampling'") + 2)
+
+    highlight = app._sof0_highlight_from_editor(editor)
+
+    assert highlight == (14, 15, "bold black on grey70", "Active field: component 2 sampling byte")
+
+
+def test_sof0_preview_shows_active_highlight_legend(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    seg = segment_by_name(rich_jpeg_bytes, "SOF0")
+    app.sof0_segment_info = (seg.offset, seg.total_length, seg.length_field or 0, seg.payload_offset or 0)
+    widgets = workspace_widgets("sof0", ["frame", "components", "tables"], "struct-edit")
+    widgets["#sof0-struct-edit"].text = (
+        "{'precision_bits': 8, 'width': 16, 'height': 8, "
+        "'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0}, "
+        "{'id': 2, 'h_sampling': 1, 'v_sampling': 1, 'quant_table_id': 0}, "
+        "{'id': 3, 'h_sampling': 1, 'v_sampling': 1, 'quant_table_id': 0}]}"
+    )
+    widgets["#sof0-struct-edit"].cursor_location = (0, widgets["#sof0-struct-edit"].text.index("'width'") + 2)
+    install_query(app, widgets)
+
+    app._refresh_sof0_preview()
+
+    assert "SOF0 at 0x" in widgets["#info-sof0-left"].text
+
+
 def test_dri_preview_and_save(rich_jpeg_path: Path, rich_jpeg_bytes: bytes) -> None:
     app = JpegFaultTui()
     seg = segment_by_name(rich_jpeg_bytes, "DRI")
@@ -178,6 +239,36 @@ def test_dqt_preview_save_and_mode_switch_sync(rich_jpeg_path: Path, rich_jpeg_b
     assert out_path.read_bytes()[out_seg.payload_offset:out_seg.payload_offset + out_seg.payload_length] == payload
 
 
+def test_dqt_struct_cursor_maps_value_to_coefficient_byte(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    seg = segment_by_name(rich_jpeg_bytes, "DQT")
+    key = "dqt-00000000"
+    payload = rich_jpeg_bytes[seg.payload_offset:seg.payload_offset + seg.payload_length]
+    editor = FakeTextArea(
+        "[{'id': 0,\n"
+        "  'precision_bits': 8,\n"
+        "  'grid': [[1, 2, 9, 17, 10, 3, 4, 11],\n"
+        "           [18, 25, 33, 26, 19, 12, 5, 6]]}]"
+    )
+    editor.cursor_location = (2, editor.text.splitlines()[2].index("1, 2") )
+
+    highlight = app._dqt_highlight_from_editor(editor, payload)
+
+    assert highlight == (5, 6, "bold black on grey70", "DQT value")
+
+
+def test_dqt_struct_cursor_on_key_does_not_highlight(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    seg = segment_by_name(rich_jpeg_bytes, "DQT")
+    payload = rich_jpeg_bytes[seg.payload_offset:seg.payload_offset + seg.payload_length]
+    editor = FakeTextArea("[{'id': 0, 'precision_bits': 8, 'grid': [[1, 2, 9, 17, 10, 3, 4, 11]]}]")
+    editor.cursor_location = (0, editor.text.index("'precision_bits'") + 2)
+
+    highlight = app._dqt_highlight_from_editor(editor, payload)
+
+    assert highlight is None
+
+
 def test_dht_preview_save_and_mode_switch_sync(rich_jpeg_path: Path, rich_jpeg_bytes: bytes) -> None:
     app = JpegFaultTui()
     seg = segment_by_name(rich_jpeg_bytes, "DHT")
@@ -205,6 +296,67 @@ def test_dht_preview_save_and_mode_switch_sync(rich_jpeg_path: Path, rich_jpeg_b
     out_path = app._dht_write_file(key, input_path, payload, length_field)
     out_seg = segment_by_name(out_path.read_bytes(), "DHT")
     assert out_path.read_bytes()[out_seg.payload_offset:out_seg.payload_offset + out_seg.payload_length] == payload
+
+
+def test_dht_struct_cursor_maps_count_and_symbol_values_to_bytes(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    seg = segment_by_name(rich_jpeg_bytes, "DHT")
+    payload = rich_jpeg_bytes[seg.payload_offset:seg.payload_offset + seg.payload_length]
+    editor = FakeTextArea(
+        "[{'class': 'DC',\n"
+        "  'id': 0,\n"
+        "  'counts': [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],\n"
+        "  'symbols': [0]}]"
+    )
+    editor.cursor_location = (2, editor.text.splitlines()[2].index(", 1,") + 2)
+    count_highlight = app._dht_highlight_from_editor(editor, payload)
+    editor.cursor_location = (3, editor.text.splitlines()[3].index("[0") + 1)
+    symbol_highlight = app._dht_highlight_from_editor(editor, payload)
+
+    assert count_highlight == (6, 7, "bold black on grey70", "DHT count")
+    assert symbol_highlight == (21, 22, "bold black on grey70", "DHT symbol")
+
+
+def test_dht_struct_cursor_on_key_does_not_highlight(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    seg = segment_by_name(rich_jpeg_bytes, "DHT")
+    payload = rich_jpeg_bytes[seg.payload_offset:seg.payload_offset + seg.payload_length]
+    editor = FakeTextArea("[{'class': 'DC', 'id': 0, 'counts': [0, 1], 'symbols': [0]}]")
+    editor.cursor_location = (0, editor.text.index("'counts'") + 2)
+
+    highlight = app._dht_highlight_from_editor(editor, payload)
+
+    assert highlight is None
+
+
+def test_dht_selection_changed_updates_active_highlight(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    seg = segment_by_name(rich_jpeg_bytes, "DHT")
+    key = "dht-00000000"
+    payload = rich_jpeg_bytes[seg.payload_offset:seg.payload_offset + seg.payload_length]
+    app.dht_segment_info[key] = (seg.offset, seg.total_length, seg.length_field or 0, seg.payload_offset or 0)
+    app.dht_preview_payload[key] = payload
+    widgets = workspace_widgets(key, ["tables", "counts", "symbols", "usage", "codes"], "table-edit")
+    widgets[f"#{key}-table-edit"].text = (
+        "[{'class': 'DC',\n"
+        "  'id': 0,\n"
+        "  'counts': [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],\n"
+        "  'symbols': [0]}]"
+    )
+    widgets[f"#{key}-table-edit"].cursor_location = (
+        2,
+        widgets[f"#{key}-table-edit"].text.splitlines()[2].index(", 1,") + 2,
+    )
+    widgets[f"#{key}-table-edit"].id = f"{key}-table-edit"
+    install_query(app, widgets)
+
+    class DummySelectionEvent:
+        def __init__(self, text_area) -> None:
+            self.text_area = text_area
+
+    app._on_dqt_selection_changed(DummySelectionEvent(widgets[f"#{key}-table-edit"]))
+
+    assert app.dht_active_highlight[key] == (6, 7, "bold black on grey70", "DHT count")
 
 
 def test_dht_raw_hex_edit_updates_preview(rich_jpeg_bytes: bytes) -> None:
@@ -307,21 +459,51 @@ def test_segment_absence_states() -> None:
     assert "No DQT segments found." in widgets["#info-dqt-empty"].text
 
 
+def test_reset_sof_tabs_handles_no_segments() -> None:
+    app = JpegFaultTui()
+    widgets = {"#sof-tabs": FakeTabs(), "#info-sof-empty": FakeLog()}
+    install_query(app, widgets)
+
+    targets = app._reset_sof_tabs([])
+
+    assert targets == []
+    assert widgets["#sof-tabs"].panes == ["SOFn"]
+    assert "No SOF segments found." in widgets["#info-sof-empty"].text
+
+
+def test_segments_list_includes_unused_sections(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    segs, ents = jp.parse_jpeg(rich_jpeg_bytes)
+    log = FakeLog()
+
+    app._write_segments(log, segs, ents, rich_jpeg_bytes)
+
+    assert "Unused sections:" in log.text
+    assert "APP1" in log.text
+    assert "SOF1" in log.text
+
+
 def test_multi_segment_tabs_created() -> None:
     app = JpegFaultTui()
-    widgets = {"#dqt-tabs": FakeTabs(), "#dht-tabs": FakeTabs()}
+    widgets = {"#sof-tabs": FakeTabs(), "#dqt-tabs": FakeTabs(), "#dht-tabs": FakeTabs()}
+    widgets["#sof0-tabs"] = FakeTabs()
+    widgets["#sof-00000064-tabs"] = FakeTabs()
     widgets["#dqt-0000000A-tabs"] = FakeTabs()
     widgets["#dqt-00000064-tabs"] = FakeTabs()
     widgets["#dht-00000014-tabs"] = FakeTabs()
     widgets["#dht-00000050-tabs"] = FakeTabs()
     install_query(app, widgets)
+    sof_segments = [Segment(0xC0, 10, "SOF0", 17, 14, 15, 19), Segment(0xC2, 100, "SOF2", 17, 104, 15, 19)]
     dqt_segments = [Segment(0xDB, 10, "DQT", 67, 14, 65, 69), Segment(0xDB, 100, "DQT", 67, 104, 65, 69)]
     dht_segments = [Segment(0xC4, 20, "DHT", 20, 24, 18, 22), Segment(0xC4, 80, "DHT", 20, 84, 18, 22)]
 
+    sof_targets = app._reset_sof_tabs(sof_segments)
     dqt_targets = app._reset_dqt_tabs(dqt_segments)
     dht_targets = app._reset_dht_tabs(dht_segments)
 
+    assert len(sof_targets) == 2
     assert len(dqt_targets) == 2
     assert len(dht_targets) == 2
+    assert widgets["#sof-tabs"].panes == ["SOF0 #1", "SOF2 #2"]
     assert widgets["#dqt-tabs"].panes == ["DQT #1", "DQT #2"]
     assert widgets["#dht-tabs"].panes == ["DHT #1", "DHT #2"]
