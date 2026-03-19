@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches, WrongType
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Checkbox,
@@ -23,6 +24,7 @@ from textual.widgets import (
 )
 from rich.text import Text
 
+from ..debug import debug_log
 from ..jpeg_parse import (
     build_dri_payload,
     build_sof0_payload,
@@ -37,6 +39,24 @@ QUERY_ERRORS = (NoMatches, WrongType, AssertionError)
 
 
 class TuiSegmentsBasicMixin:
+    SOF_DEBUG_LOG = Path("/tmp/jpeg_sof_debug.log")
+
+    def _sof_debug_enabled(self) -> bool:
+        try:
+            return self._checkbox_value("#debug")
+        except Exception:
+            return False
+
+    def _sof_debug(self, msg: str) -> None:
+        if not self._sof_debug_enabled():
+            return
+        debug_log(True, msg)
+        try:
+            with self.SOF_DEBUG_LOG.open("a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            return
+
     def _add_sof0_tab(self) -> None:
         tabs = self.query_one("#info-tabs", TabbedContent)
         tabs.add_pane(TabPane("SOFn", self._build_sof0_pane()))
@@ -53,7 +73,7 @@ class TuiSegmentsBasicMixin:
             id="sof-panel",
         )
 
-    def _build_sof_segment_pane(self, key: str, title: str, editable: bool) -> Horizontal:
+    def _build_sof_segment_pane(self, key: str, title: str, editable: bool, root_id: str) -> Horizontal:
         views = "Views: frame, components, tables, edit" if editable else "Views: frame, components, tables"
         return Horizontal(
             VerticalScroll(
@@ -66,6 +86,7 @@ class TuiSegmentsBasicMixin:
                 classes="sof-right",
             ),
             classes="row",
+            id=root_id,
         )
 
     def _build_dri_pane(self) -> Horizontal:
@@ -91,7 +112,7 @@ class TuiSegmentsBasicMixin:
         tabs.show_tab(pane.id)
 
     def _init_sof_detail_tabs(self, key: str, editable: bool) -> None:
-        tabs = self.query_one(f"#{key}-tabs", TabbedContent)
+        tabs = self._sof_query_one(key, f"#{key}-tabs", TabbedContent)
         tabs.clear_panes()
         for name in ("Frame", "Components", "Tables"):
             pane_id = name.lower()
@@ -126,8 +147,11 @@ class TuiSegmentsBasicMixin:
     def _reset_sof_tabs(self, segments) -> list[tuple[str, object, bool]]:
         sof_tabs = self.query_one("#sof-tabs", TabbedContent)
         sof_tabs.clear_panes()
+        self.sof_root_ids = {}
+        self.sof_render_retry_budget = {}
         targets: list[tuple[str, object, bool]] = []
         sof_segments = [s for s in segments if s.name.startswith("SOF")]
+        self._sof_debug(f"sof reset count={len(sof_segments)} names={[s.name for s in sof_segments]}")
         if not sof_segments:
             pane = TabPane("SOFn", RichLog(id="info-sof-empty", highlight=True), id=self._dynamic_pane_id("sof-pane-empty"))
             sof_tabs.add_pane(pane)
@@ -140,7 +164,13 @@ class TuiSegmentsBasicMixin:
             editable = seg.name == "SOF0" and not editable_assigned
             key = "sof0" if editable else f"sof-{seg.offset:08X}"
             label = f"{seg.name} #{idx}" if len(sof_segments) > 1 else seg.name
-            pane = TabPane(label, self._build_sof_segment_pane(key, label, editable), id=self._dynamic_pane_id(f"sof-pane-{idx}"))
+            root_id = self._dynamic_pane_id(f"{key}-root")
+            self.sof_root_ids[key] = root_id
+            self.sof_render_retry_budget[key] = 4
+            self._sof_debug(
+                f"sof target key={key} seg={seg.name} offset=0x{seg.offset:08X} editable={editable} root={root_id}"
+            )
+            pane = TabPane(label, self._build_sof_segment_pane(key, label, editable, root_id), id=self._dynamic_pane_id(f"sof-pane-{idx}"))
             sof_tabs.add_pane(pane)
             self._init_sof_detail_tabs(key, editable)
             if first_pane_id is None:
@@ -150,6 +180,19 @@ class TuiSegmentsBasicMixin:
         if first_pane_id is not None:
             sof_tabs.show_tab(first_pane_id)
         return targets
+
+    def _sof_query_one(self, key: str, selector: str, expect):
+        root_id = self.sof_root_ids.get(key)
+        if root_id:
+            try:
+                root = self.query_one(f"#{root_id}", Widget)
+                self._sof_debug(f"sof query key={key} root={root_id} selector={selector} scoped=yes")
+                return root.query_one(selector, expect)
+            except QUERY_ERRORS:
+                self._sof_debug(f"sof query key={key} root={root_id} selector={selector} scoped=miss")
+                pass
+        self._sof_debug(f"sof query key={key} selector={selector} scoped=no")
+        return self.query_one(selector, expect)
 
     def _init_dri_tabs(self) -> None:
         tabs = self.query_one("#dri-tabs", TabbedContent)
@@ -394,6 +437,9 @@ class TuiSegmentsBasicMixin:
         components = parsed.get("components", [])
         if not isinstance(components, list):
             raise ValueError("SOF0 components must be a list.")
+        component_count = int(parsed.get("component_count", len(components)))
+        if component_count != len(components):
+            raise ValueError("SOF0 component_count must match the number of components.")
         normalized = []
         for idx, comp in enumerate(components, start=1):
             if not isinstance(comp, dict):
@@ -498,7 +544,7 @@ class TuiSegmentsBasicMixin:
             "precision_bits": (4, 5, "bold black on grey70", "Active field: sample precision"),
             "height": (5, 7, "bold black on grey70", "Active field: image height"),
             "width": (7, 9, "bold black on grey70", "Active field: image width"),
-            "components": (9, 10, "bold black on grey70", "Active field: component count"),
+            "component_count": (9, 10, "bold black on grey70", "Active field: component count"),
         }
         for name, highlight in mapping.items():
             span = self._sof0_value_span(line, name)
@@ -792,12 +838,15 @@ class TuiSegmentsBasicMixin:
             app0_log.write(line)
 
     def _render_sof0_segment(self, data: bytes, segments) -> None:
+        self._sof_debug(f"sof render editable candidates={[s.name for s in segments]}")
         try:
-            left_log = self.query_one("#info-sof0-left", RichLog)
-            frame_log = self.query_one("#info-sof0-frame", RichLog)
-            comps_log = self.query_one("#info-sof0-components", RichLog)
-            tables_log = self.query_one("#info-sof0-tables", RichLog)
+            left_log = self._sof_query_one("sof0", "#info-sof0-left", RichLog)
+            frame_log = self._sof_query_one("sof0", "#info-sof0-frame", RichLog)
+            comps_log = self._sof_query_one("sof0", "#info-sof0-components", RichLog)
+            tables_log = self._sof_query_one("sof0", "#info-sof0-tables", RichLog)
         except QUERY_ERRORS:
+            self._sof_debug("sof render editable widgets=missing")
+            self._retry_sof_render("sof0", self._render_sof0_segment, data, segments)
             return
         for log in (left_log, frame_log, comps_log, tables_log):
             log.clear()
@@ -805,8 +854,10 @@ class TuiSegmentsBasicMixin:
         if seg is None or seg.payload_offset is None or seg.payload_length is None:
             self._clear_sof0_editor()
             left_log.write("No SOF0 segment found.")
+            self._sof_debug("sof render editable no_sof0")
             return
         payload = data[seg.payload_offset:seg.payload_offset + seg.payload_length]
+        self._sof_debug(f"sof render editable offset=0x{seg.offset:08X} payload_len={len(payload)}")
         self.sof0_segment_info = (seg.offset, seg.total_length, seg.length_field or 0, seg.payload_offset)
         self.sof0_original_payload = payload
         self.sof0_preview_payload = payload
@@ -816,6 +867,10 @@ class TuiSegmentsBasicMixin:
         self._render_sof0_views(seg.offset, seg.length_field or 0, payload)
 
     def _render_sof_segments(self, data: bytes, targets: list[tuple[str, object, bool]]) -> None:
+        self._sof_debug(
+            "sof render targets="
+            + str([(key, seg.name, f"0x{seg.offset:08X}", editable) for key, seg, editable in targets])
+        )
         editable_found = False
         for key, seg, editable in targets:
             if editable:
@@ -827,19 +882,24 @@ class TuiSegmentsBasicMixin:
             self._clear_sof0_editor()
 
     def _render_sof_segment_views(self, key: str, seg_name: str, marker: int, data: bytes, seg) -> None:
+        self._sof_debug(f"sof render key={key} seg={seg_name} offset=0x{seg.offset:08X}")
         try:
-            left_log = self.query_one(f"#info-{key}-left", RichLog)
-            frame_log = self.query_one(f"#info-{key}-frame", RichLog)
-            comps_log = self.query_one(f"#info-{key}-components", RichLog)
-            tables_log = self.query_one(f"#info-{key}-tables", RichLog)
+            left_log = self._sof_query_one(key, f"#info-{key}-left", RichLog)
+            frame_log = self._sof_query_one(key, f"#info-{key}-frame", RichLog)
+            comps_log = self._sof_query_one(key, f"#info-{key}-components", RichLog)
+            tables_log = self._sof_query_one(key, f"#info-{key}-tables", RichLog)
         except QUERY_ERRORS:
+            self._sof_debug(f"sof render key={key} widgets=missing")
+            self._retry_sof_render(key, self._render_sof_segment_views, key, seg_name, marker, data, seg)
             return
         for log in (left_log, frame_log, comps_log, tables_log):
             log.clear()
         if seg.payload_offset is None or seg.payload_length is None:
             left_log.write(f"{seg_name} has no payload.")
+            self._sof_debug(f"sof render key={key} no_payload")
             return
         payload = data[seg.payload_offset:seg.payload_offset + seg.payload_length]
+        self._sof_debug(f"sof render key={key} payload_len={len(payload)}")
         self._render_sof_views_for_key(key, seg_name, marker, seg.offset, seg.length_field or 0, payload)
 
     def _render_sof0_views(self, offset: int, length_field: int, payload: bytes) -> None:
@@ -848,12 +908,15 @@ class TuiSegmentsBasicMixin:
     def _render_sof_views_for_key(
         self, key: str, seg_name: str, marker: int, offset: int, length_field: int, payload: bytes
     ) -> None:
+        self._sof_debug(f"sof views key={key} seg={seg_name} payload_len={len(payload)} length=0x{length_field:04X}")
         try:
-            left_log = self.query_one(f"#info-{key}-left", RichLog)
-            frame_log = self.query_one(f"#info-{key}-frame", RichLog)
-            comps_log = self.query_one(f"#info-{key}-components", RichLog)
-            tables_log = self.query_one(f"#info-{key}-tables", RichLog)
+            left_log = self._sof_query_one(key, f"#info-{key}-left", RichLog)
+            frame_log = self._sof_query_one(key, f"#info-{key}-frame", RichLog)
+            comps_log = self._sof_query_one(key, f"#info-{key}-components", RichLog)
+            tables_log = self._sof_query_one(key, f"#info-{key}-tables", RichLog)
         except QUERY_ERRORS:
+            self._sof_debug(f"sof views key={key} widgets=missing")
+            self._retry_sof_render(key, self._render_sof_views_for_key, key, seg_name, marker, offset, length_field, payload)
             return
         for log in (left_log, frame_log, comps_log, tables_log):
             log.clear()
@@ -863,6 +926,16 @@ class TuiSegmentsBasicMixin:
         self._write_sof_frame_tab(frame_log, info)
         self._write_sof_components_tab(comps_log, components)
         self._write_sof_tables_tab(tables_log, components)
+        self.sof_render_retry_budget[key] = 0
+
+    def _retry_sof_render(self, key: str, fn, *args) -> None:
+        remaining = int(self.sof_render_retry_budget.get(key, 0))
+        if remaining <= 0:
+            self._sof_debug(f"sof retry key={key} exhausted")
+            return
+        self.sof_render_retry_budget[key] = remaining - 1
+        self._sof_debug(f"sof retry key={key} remaining={remaining - 1}")
+        self.call_after_refresh(fn, *args)
 
     def _write_sof_left_panel(
         self, key: str, seg_name: str, marker: int, log: RichLog, offset: int, length_field: int, payload: bytes, info, components
@@ -977,6 +1050,7 @@ class TuiSegmentsBasicMixin:
             "precision_bits": int(info["precision_bits"]),
             "width": int(info["width"]),
             "height": int(info["height"]),
+            "component_count": int(info["components"]),
             "components": decode_sof_components(payload),
         }
         try:

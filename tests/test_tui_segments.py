@@ -3,13 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from textual.worker import WorkerState
 
 from jpeg_fault.core import jpeg_parse as jp
+from jpeg_fault.core.entropy_trace import trace_entropy_scans
 from jpeg_fault.core.models import Segment
 from jpeg_fault.core.tui import JpegFaultTui
+from jpeg_fault.core.tui.entropy_trace import TraceBlockButton, TraceNavButton
 from tests.tui_test_helpers import (
     FakeButton,
     FakeCheckbox,
+    FakeContainer,
     FakeInput,
     FakeLog,
     FakeStatic,
@@ -195,6 +199,374 @@ def test_app0_preview_refresh() -> None:
     assert "Identifier: JFIF\\0" in widgets["#info-app0"].text
 
 
+def test_render_entropy_trace_workspace(decodable_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    app.info_data = decodable_jpeg_bytes
+    segments, entropy_ranges = jp.parse_jpeg(decodable_jpeg_bytes)
+    scan = trace_entropy_scans(decodable_jpeg_bytes, segments, entropy_ranges)[0]
+    key = "etrace-scan-0"
+    widgets = {
+        f"#{key}-blocks": FakeContainer(),
+        f"#{key}-page-info": FakeStatic(),
+        f"#{key}-page": FakeInput(),
+        f"#info-{key}-overview": FakeLog(),
+        f"#info-{key}-bits": FakeLog(),
+        f"#info-{key}-dc": FakeLog(),
+        f"#info-{key}-ac": FakeLog(),
+        f"#info-{key}-coefficients": FakeLog(),
+        f"#info-{key}-tables": FakeLog(),
+    }
+    install_query(app, widgets)
+
+    app._render_entropy_trace_scan(key, scan)
+
+    assert len(widgets[f"#{key}-blocks"].children) == 1
+    assert "MCU 0 block 0" in widgets[f"#info-{key}-overview"].text
+    assert "Scan bit range: [0,2)" in widgets[f"#info-{key}-bits"].text
+    assert "Bitstream:" in widgets[f"#info-{key}-bits"].text
+    assert "Bytestream:" in widgets[f"#info-{key}-bits"].text
+    assert "00000000" in widgets[f"#info-{key}-bits"].text
+    assert "00" in widgets[f"#info-{key}-bits"].text
+    assert "Predictor: 0 -> 0" in widgets[f"#info-{key}-dc"].text
+    assert "EOB=True" in widgets[f"#info-{key}-ac"].text
+    assert "Natural 8x8 grid" in widgets[f"#info-{key}-coefficients"].text
+    assert "DC table id: 0" in widgets[f"#info-{key}-tables"].text
+
+
+def test_render_sos_workspace_and_links(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    app.info_data = rich_jpeg_bytes
+    segs, ents = jp.parse_jpeg(rich_jpeg_bytes)
+    app.info_segments = segs
+    app.info_entropy_ranges = ents
+    seg = segment_by_name(rich_jpeg_bytes, "SOS")
+    key = f"sos-{seg.offset:08X}"
+    widgets = workspace_widgets(key, ["header", "components", "flow", "links"], "struct-edit")
+    install_query(app, widgets)
+
+    app._render_sos_segment(rich_jpeg_bytes, seg, key, 0)
+
+    assert "Components in scan (Ns): 3" in widgets[f"#info-{key}-header"].text
+    assert "Component 1: id=1" in widgets[f"#info-{key}-components"].text
+    assert "Scan 0:" in widgets[f"#info-{key}-flow"].text
+    assert "Referenced Huffman tables:" in widgets[f"#info-{key}-links"].text
+
+
+def test_sos_preview_and_save(rich_jpeg_path: Path, rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    segs, ents = jp.parse_jpeg(rich_jpeg_bytes)
+    app.info_data = rich_jpeg_bytes
+    app.info_segments = segs
+    app.info_entropy_ranges = ents
+    seg = segment_by_name(rich_jpeg_bytes, "SOS")
+    key = f"sos-{seg.offset:08X}"
+    app.sos_segment_info[key] = (seg.offset, seg.total_length, seg.length_field or 0, seg.payload_offset or 0)
+    app.sos_scan_index[key] = 0
+    widgets = workspace_widgets(key, ["header", "components", "flow", "links"], "struct-edit")
+    widgets["#input-path"] = FakeInput(str(rich_jpeg_path))
+    widgets[f"#{key}-struct-edit"].text = (
+        "{'components': [{'id': 1, 'dc_table_id': 0, 'ac_table_id': 0}, "
+        "{'id': 2, 'dc_table_id': 1, 'ac_table_id': 1}, "
+        "{'id': 3, 'dc_table_id': 1, 'ac_table_id': 1}], "
+        "'ss': 0, 'se': 63, 'ah': 0, 'al': 0}"
+    )
+    install_query(app, widgets)
+
+    app._refresh_sos_preview(key)
+    assert "Components in scan (Ns): 3" in widgets[f"#info-{key}-header"].text
+
+    input_path, payload, length_field = app._sos_save_inputs(key)
+    out_path = app._sos_write_file(key, input_path, payload, length_field)
+    out_seg = segment_by_name(out_path.read_bytes(), "SOS")
+    assert out_path.exists()
+    assert out_path.read_bytes()[out_seg.payload_offset:out_seg.payload_offset + out_seg.payload_length] == payload
+
+
+def test_sos_struct_editor_updates_active_highlight(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    segs, ents = jp.parse_jpeg(rich_jpeg_bytes)
+    app.info_data = rich_jpeg_bytes
+    app.info_segments = segs
+    app.info_entropy_ranges = ents
+    seg = segment_by_name(rich_jpeg_bytes, "SOS")
+    key = f"sos-{seg.offset:08X}"
+    widgets = workspace_widgets(key, ["header", "components", "flow", "links"], "struct-edit")
+    install_query(app, widgets)
+
+    app._render_sos_segment(rich_jpeg_bytes, seg, key, 0)
+
+    editor = widgets[f"#{key}-struct-edit"]
+    lines = editor.text.splitlines()
+    ss_line = next(idx for idx, line in enumerate(lines) if "'ss':" in line)
+    ss_col = lines[ss_line].index("'ss':") + len("'ss': ")
+    editor.cursor_location = (ss_line, ss_col)
+
+    app._update_sos_active_highlight(key)
+
+    assert app.sos_active_highlight[key][:2] == (11, 12)
+
+
+def test_sos_struct_editor_ns_and_first_component_highlight_different_bytes(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    segs, ents = jp.parse_jpeg(rich_jpeg_bytes)
+    app.info_data = rich_jpeg_bytes
+    app.info_segments = segs
+    app.info_entropy_ranges = ents
+    seg = segment_by_name(rich_jpeg_bytes, "SOS")
+    key = f"sos-{seg.offset:08X}"
+    widgets = workspace_widgets(key, ["header", "components", "flow", "links"], "struct-edit")
+    install_query(app, widgets)
+
+    app._render_sos_segment(rich_jpeg_bytes, seg, key, 0)
+
+    editor = widgets[f"#{key}-struct-edit"]
+    lines = editor.text.splitlines()
+
+    ns_line = next(idx for idx, line in enumerate(lines) if "'ns':" in line)
+    ns_col = lines[ns_line].index("'ns':") + len("'ns': ")
+    editor.cursor_location = (ns_line, ns_col)
+    app._update_sos_active_highlight(key)
+    assert app.sos_active_highlight[key][:2] == (4, 5)
+
+    comp_line = next(idx for idx, line in enumerate(lines) if "'id': 1" in line)
+    comp_col = lines[comp_line].index("'id': 1") + len("'id': ")
+    editor.cursor_location = (comp_line, comp_col)
+    app._update_sos_active_highlight(key)
+    assert app.sos_active_highlight[key][:2] == (5, 6)
+
+
+def test_sos_raw_hex_preview_recovers_lenient(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    segs, ents = jp.parse_jpeg(rich_jpeg_bytes)
+    app.info_data = rich_jpeg_bytes
+    app.info_segments = segs
+    app.info_entropy_ranges = ents
+    seg = segment_by_name(rich_jpeg_bytes, "SOS")
+    key = f"sos-{seg.offset:08X}"
+    app.sos_segment_info[key] = (seg.offset, seg.total_length, seg.length_field or 0, seg.payload_offset or 0)
+    app.sos_scan_index[key] = 0
+    widgets = workspace_widgets(key, ["header", "components", "flow", "links"], "struct-edit")
+    widgets[f"#{key}-advanced-mode"] = FakeCheckbox(True)
+    widgets[f"#{key}-raw-hex"].text = "03 01 00 02 11 03 11 00 3F 0"
+    install_query(app, widgets)
+
+    app._refresh_sos_preview(key)
+
+    assert app.sos_preview_payload[key] == bytes.fromhex("03 01 00 02 11 03 11 00 3F")
+    assert widgets[f"#{key}-error"].text.startswith("Warning:")
+
+
+def test_sos_raw_hex_editor_updates_active_highlight(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    segs, ents = jp.parse_jpeg(rich_jpeg_bytes)
+    app.info_data = rich_jpeg_bytes
+    app.info_segments = segs
+    app.info_entropy_ranges = ents
+    seg = segment_by_name(rich_jpeg_bytes, "SOS")
+    key = f"sos-{seg.offset:08X}"
+    widgets = workspace_widgets(key, ["header", "components", "flow", "links"], "struct-edit")
+    widgets[f"#{key}-advanced-mode"] = FakeCheckbox(True)
+    install_query(app, widgets)
+
+    app._render_sos_segment(rich_jpeg_bytes, seg, key, 0)
+
+    editor = widgets[f"#{key}-raw-hex"]
+    editor.cursor_location = (0, 3)
+    app._update_sos_active_highlight(key)
+
+    assert app.sos_active_highlight[key][:2] == (4, 5)
+
+
+def test_render_entropy_trace_workspace_for_unsupported_scan(progressive_like_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    segments, entropy_ranges = jp.parse_jpeg(progressive_like_jpeg_bytes)
+    scan = trace_entropy_scans(progressive_like_jpeg_bytes, segments, entropy_ranges)[0]
+    key = "etrace-scan-0"
+    widgets = {
+        f"#{key}-blocks": FakeContainer(),
+        f"#{key}-page-info": FakeStatic(),
+        f"#{key}-page": FakeInput(),
+        f"#info-{key}-overview": FakeLog(),
+        f"#info-{key}-bits": FakeLog(),
+        f"#info-{key}-dc": FakeLog(),
+        f"#info-{key}-ac": FakeLog(),
+        f"#info-{key}-coefficients": FakeLog(),
+        f"#info-{key}-tables": FakeLog(),
+    }
+    install_query(app, widgets)
+
+    app._render_entropy_trace_scan(key, scan)
+
+    assert widgets[f"#{key}-blocks"].children == []
+    assert "Supported: no" in widgets[f"#info-{key}-overview"].text
+    assert "No block-level trace available" in widgets[f"#info-{key}-bits"].text
+
+
+def test_entropy_trace_button_selection_updates_selected_block() -> None:
+    app = JpegFaultTui()
+
+    class DummyScan:
+        blocks = ["b0", "b1", "b2"]
+
+    calls: list[tuple[str, str, object]] = []
+    renders: list[str] = []
+    app.entropy_trace_scans = {"etrace-scan-0": DummyScan()}  # type: ignore[assignment]
+    app.entropy_trace_pages = {"etrace-scan-0": 0}
+    app._render_entropy_trace_block_detail = lambda key, block, scan: calls.append((key, block, scan))  # type: ignore[assignment]
+    app._render_entropy_trace_page = lambda key: renders.append(key)  # type: ignore[assignment]
+
+    class DummyEvent:
+        button = TraceBlockButton("x", "etrace-scan-0", 2)
+
+    app._on_entropy_trace_block_pressed(DummyEvent())
+
+    assert app.entropy_trace_selected["etrace-scan-0"] == 2
+    assert calls[0][0] == "etrace-scan-0"
+    assert calls[0][1] == "b2"
+    assert renders == []
+
+
+def test_entropy_trace_prev_next_buttons_change_page() -> None:
+    app = JpegFaultTui()
+
+    class DummyScan:
+        blocks = [f"b{i}" for i in range(40)]
+
+    app.entropy_trace_scans = {"etrace-scan-0": DummyScan()}  # type: ignore[assignment]
+    app.entropy_trace_pages = {"etrace-scan-0": 0}
+    pages: list[int] = []
+    app._render_entropy_trace_page = lambda key: pages.append(app.entropy_trace_pages[key])  # type: ignore[assignment]
+
+    class DummyEvent:
+        def __init__(self, direction: str) -> None:
+            self.button = TraceNavButton(direction, "etrace-scan-0", direction)
+
+    app._on_entropy_trace_nav_pressed(DummyEvent("next"))
+    app._on_entropy_trace_nav_pressed(DummyEvent("prev"))
+
+    assert pages == [1, 0]
+
+
+def test_entropy_trace_worker_success_marks_loaded() -> None:
+    app = JpegFaultTui()
+    app._entropy_trace_worker_serial = 5
+    app.entropy_trace_pending = True
+    app.entropy_trace_loaded = False
+    button_calls: list[tuple[bool, str]] = []
+    status_calls: list[str] = []
+    app._set_entropy_trace_load_button = lambda *, disabled, label: button_calls.append((disabled, label))  # type: ignore[assignment]
+    app._set_entropy_trace_status = lambda text: status_calls.append(text)  # type: ignore[assignment]
+
+    class DummyWorker:
+        name = "entropy-trace-5"
+        result = 5
+
+    class DummyEvent:
+        worker = DummyWorker()
+        state = WorkerState.SUCCESS
+
+    app._on_worker_state_changed(DummyEvent())
+
+    assert app.entropy_trace_pending is False
+    assert app.entropy_trace_loaded is True
+    assert button_calls == [(False, "Reload Trace")]
+    assert status_calls == ["Trace loaded."]
+
+
+def test_entropy_trace_chunk_does_not_rerender_after_first_visible_page() -> None:
+    app = JpegFaultTui()
+    app._entropy_trace_worker_serial = 7
+    app.entropy_trace_scans = {}
+    app.entropy_trace_pages = {}
+    app.entropy_trace_selected = {}
+    rendered: list[str] = []
+    appended: list[str] = []
+    app._append_entropy_trace_scan_tab = lambda key, scan: appended.append(key)  # type: ignore[assignment]
+    app._render_entropy_trace_scan = lambda key, scan: rendered.append(f"scan:{key}:{len(scan.blocks)}")  # type: ignore[assignment]
+    app._render_entropy_trace_page = lambda key: rendered.append(f"page:{key}")  # type: ignore[assignment]
+
+    first_chunk = type(
+        "Chunk",
+        (),
+        {
+            "scan_index": 0,
+            "sof_name": "SOF0",
+            "progressive": False,
+            "supported": True,
+            "reason": "",
+            "ss": 0,
+            "se": 63,
+            "ah": 0,
+            "al": 0,
+            "restart_interval": 0,
+            "component_ids": [1],
+            "component_names": ["Y"],
+            "total_scan_bits": 16,
+            "entropy_file_start": 10,
+            "entropy_file_end": 12,
+            "blocks": ["b0"],
+            "restart_segments": [],
+        },
+    )()
+    second_chunk = type(
+        "Chunk",
+        (),
+        {
+            "scan_index": 0,
+            "sof_name": "SOF0",
+            "progressive": False,
+            "supported": True,
+            "reason": "",
+            "ss": 0,
+            "se": 63,
+            "ah": 0,
+            "al": 0,
+            "restart_interval": 0,
+            "component_ids": [1],
+            "component_names": ["Y"],
+            "total_scan_bits": 16,
+            "entropy_file_start": 10,
+            "entropy_file_end": 12,
+            "blocks": ["b1"],
+            "restart_segments": [],
+        },
+    )()
+
+    app._apply_entropy_trace_chunk(7, first_chunk)
+    app._apply_entropy_trace_chunk(7, second_chunk)
+
+    assert appended == ["etrace-scan-0"]
+    assert rendered == ["scan:etrace-scan-0:1"]
+
+
+def test_entropy_trace_load_button_starts_worker() -> None:
+    app = JpegFaultTui()
+    app.info_data = b"data"
+    app.info_segments = ["segments"]
+    app.info_entropy_ranges = ["ranges"]
+    app.entropy_trace_pending = False
+    app._info_rebuild_serial = 7
+    calls: list[tuple[str, object]] = []
+    app._reset_entropy_trace_tabs = lambda scans: calls.append(("reset", scans)) or []  # type: ignore[assignment]
+    app._set_entropy_trace_status = lambda text: calls.append(("status", text))  # type: ignore[assignment]
+    app._set_entropy_trace_load_button = lambda *, disabled, label: calls.append(("button", (disabled, label)))  # type: ignore[assignment]
+    app._start_entropy_trace_worker = lambda data, segments, entropy_ranges, serial: calls.append(("start", (data, segments, entropy_ranges, serial)))  # type: ignore[assignment]
+
+    class DummyEvent:
+        pass
+
+    app._on_entropy_trace_load_pressed(DummyEvent())
+
+    assert app.entropy_trace_pending is True
+    assert app.entropy_trace_loaded is False
+    assert calls == [
+        ("reset", None),
+        ("status", "Loading entropy trace..."),
+        ("button", (True, "Loading Trace...")),
+        ("start", (b"data", ["segments"], ["ranges"], 7)),
+    ]
+
+
 def test_sof0_preview_and_save(tmp_path: Path, rich_jpeg_path: Path, rich_jpeg_bytes: bytes) -> None:
     app = JpegFaultTui()
     seg = segment_by_name(rich_jpeg_bytes, "SOF0")
@@ -223,7 +595,7 @@ def test_sof0_preview_and_save(tmp_path: Path, rich_jpeg_path: Path, rich_jpeg_b
 def test_sof0_struct_cursor_maps_width_to_highlight() -> None:
     app = JpegFaultTui()
     editor = FakeTextArea(
-        "{'precision_bits': 8, 'width': 16, 'height': 8, "
+        "{'precision_bits': 8, 'width': 16, 'height': 8, 'component_count': 1, "
         "'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0}]}"
     )
     editor.cursor_location = (0, editor.text.index(": 16") + 2)
@@ -236,7 +608,7 @@ def test_sof0_struct_cursor_maps_width_to_highlight() -> None:
 def test_sof0_struct_cursor_on_key_does_not_highlight() -> None:
     app = JpegFaultTui()
     editor = FakeTextArea(
-        "{'precision_bits': 8, 'width': 16, 'height': 8, "
+        "{'precision_bits': 8, 'width': 16, 'height': 8, 'component_count': 1, "
         "'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0}]}"
     )
     editor.cursor_location = (0, editor.text.index("'width'") + 2)
@@ -252,14 +624,45 @@ def test_sof0_struct_cursor_maps_component_fields_to_component_bytes() -> None:
         "{'precision_bits': 8,\n"
         " 'width': 16,\n"
         " 'height': 8,\n"
+        " 'component_count': 2,\n"
         " 'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0},\n"
         "                {'id': 2, 'h_sampling': 1, 'v_sampling': 1, 'quant_table_id': 0}]}"
     )
-    editor.cursor_location = (4, editor.text.splitlines()[4].index(": 1, 'v_sampling'") + 2)
+    editor.cursor_location = (5, editor.text.splitlines()[5].index(": 1, 'v_sampling'") + 2)
 
     highlight = app._sof0_highlight_from_editor(editor)
 
     assert highlight == (14, 15, "bold black on grey70", "Active field: component 2 sampling byte")
+
+
+def test_sof0_struct_component_count_and_first_component_id_highlight_different_bytes() -> None:
+    app = JpegFaultTui()
+    editor = FakeTextArea(
+        "{'precision_bits': 8,\n"
+        " 'width': 16,\n"
+        " 'height': 8,\n"
+        " 'component_count': 2,\n"
+        " 'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0},\n"
+        "                {'id': 2, 'h_sampling': 1, 'v_sampling': 1, 'quant_table_id': 0}]}"
+    )
+
+    count_line = editor.text.splitlines()[3]
+    editor.cursor_location = (3, count_line.index(": 2") + 2)
+    assert app._sof0_highlight_from_editor(editor) == (
+        9,
+        10,
+        "bold black on grey70",
+        "Active field: component count",
+    )
+
+    comp_line = editor.text.splitlines()[4]
+    editor.cursor_location = (4, comp_line.index("'id': 1") + len("'id': "))
+    assert app._sof0_highlight_from_editor(editor) == (
+        10,
+        11,
+        "bold black on grey70",
+        "Active field: component 1 id",
+    )
 
 
 def test_sof0_preview_shows_active_highlight_legend(rich_jpeg_bytes: bytes) -> None:
@@ -268,7 +671,7 @@ def test_sof0_preview_shows_active_highlight_legend(rich_jpeg_bytes: bytes) -> N
     app.sof0_segment_info = (seg.offset, seg.total_length, seg.length_field or 0, seg.payload_offset or 0)
     widgets = workspace_widgets("sof0", ["frame", "components", "tables"], "struct-edit")
     widgets["#sof0-struct-edit"].text = (
-        "{'precision_bits': 8, 'width': 16, 'height': 8, "
+        "{'precision_bits': 8, 'width': 16, 'height': 8, 'component_count': 3, "
         "'components': [{'id': 1, 'h_sampling': 2, 'v_sampling': 2, 'quant_table_id': 0}, "
         "{'id': 2, 'h_sampling': 1, 'v_sampling': 1, 'quant_table_id': 0}, "
         "{'id': 3, 'h_sampling': 1, 'v_sampling': 1, 'quant_table_id': 0}]}"

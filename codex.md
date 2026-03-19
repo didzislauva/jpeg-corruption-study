@@ -82,6 +82,9 @@ All real logic lives under:
 - [wave_analysis.py](jpeg_fault/core/wave_analysis.py)
   Entropy stream wave charts and sliding-window stream statistics.
 
+- [entropy_trace.py](jpeg_fault/core/entropy_trace.py)
+  Baseline sequential entropy scan tracing with block-level bit/byte provenance.
+
 - [dct_heatmap.py](jpeg_fault/core/plugins/_shared/dct_heatmap.py)
   `8x8` block DCT-based visual analysis on decoded source image luminance.
 
@@ -118,7 +121,9 @@ All real logic lives under:
 - The old top-level `tui_*` compatibility modules were removed; imports/tests now target `jpeg_fault.core.tui.*` directly.
 - Plugin panel lifecycle issues in the TUI were fixed in this session.
 - Chart-producing analyses now force matplotlib to the headless `Agg` backend to avoid Tk/thread crashes from TUI workers.
-- The built-in analysis plugins now include `entropy_wave`, `sliding_wave`, `dc_heatmap`, and `ac_energy_heatmap`.
+- The built-in analysis plugins now include `entropy_wave`, `entropy_trace`, `sliding_wave`, `dc_heatmap`, and `ac_energy_heatmap`.
+- `entropy_trace` now provides a plugin-first baseline sequential scan tracer that maps scan bits to decoded blocks, coefficients, and source file-byte provenance.
+- The TUI Info panel now includes a Trace workspace that reuses `entropy_trace.py` for per-scan block inspection.
 - The built-in mutation plugins now include `mutation_55` and `mutation_aa`.
 - `dc_heatmap` and `ac_energy_heatmap` now expose `cmap`, `plane_mode`, and `block_size`, and default unnamed outputs to descriptive filenames in the current working directory.
 - The TUI now launches the migrated wave/DC/AC analyses through the `Graphic Output` plugin tabs instead of the old dedicated Outputs-panel fields.
@@ -155,6 +160,7 @@ What is left:
 - reduce repeated editor mechanics across APP1 and the remaining DHT special cases
 - improve runtime-oriented TUI/plugin coverage beyond fake widgets
 - extend the plugin system with more real plugin panels now that the shell is stable
+- polish the new TUI Trace workspace and extend it with richer byte-boundary highlighting and broader progressive support
 - tighten mutation UX/help wording so the TUI explains `sample`, `cumulative`, and `sequential` precisely
 
 ## Plugin Placement Rule

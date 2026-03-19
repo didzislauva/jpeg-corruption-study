@@ -60,6 +60,7 @@ from ..jpeg_parse import (
     build_dht_payload,
     build_dqt_payload,
     build_sof0_payload,
+    build_sos_payload,
     decode_app0,
     decode_dri,
     decode_dht,
@@ -68,6 +69,7 @@ from ..jpeg_parse import (
     decode_dqt_tables,
     decode_sof0,
     decode_sof_components,
+    decode_sos,
     decode_sos_components,
     dqt_natural_grid_to_values,
     dqt_values_to_natural_grid,
@@ -76,10 +78,13 @@ from ..jpeg_parse import (
 from ..mutate import total_entropy_length
 from ..report import explain_segment
 from ..tools import insert_custom_appn, output_path_for, read_payload_hex
+from ..entropy_trace import stream_entropy_scans
 
 from .segments_basic import TuiSegmentsBasicMixin
+from .segments_sos import TuiSegmentsSosMixin
 from .segments_tables import TuiSegmentsTablesMixin
 from .segments_appn import TuiSegmentsAppnMixin
+from .entropy_trace import TuiEntropyTraceMixin
 from .hex import TuiHexMixin
 
 
@@ -126,7 +131,7 @@ class JpegOnlyDirTree(DirectoryTree):
         return [p for p in paths if Path(p).is_dir()]
 
 
-class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmentsAppnMixin, TuiHexMixin):
+class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsTablesMixin, TuiSegmentsAppnMixin, TuiEntropyTraceMixin, TuiHexMixin):
     """
     Fullscreen TUI that collects options and runs the JPEG fault tolerance pipeline.
     """
@@ -191,6 +196,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     _app1_syncing = False
     info_data: Optional[bytes] = None
     info_segments: Optional[list] = None
+    info_entropy_ranges: Optional[list] = None
     hex_page = reactive(0)
     hex_legend_offsets: dict[str, int] = {}
     hex_legend_counter = reactive(0)
@@ -210,6 +216,13 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     dht_preview_payload: dict[str, bytes] = {}
     dht_active_highlight: dict[str, Tuple[int, int, str, str]] = {}
     dht_dirty: dict[str, bool] = {}
+    sos_segment_info: dict[str, Tuple[int, int, int, int]] = {}
+    sos_original_payload: dict[str, bytes] = {}
+    sos_preview_payload: dict[str, bytes] = {}
+    sos_active_highlight: dict[str, Tuple[int, int, str, str]] = {}
+    sos_dirty: dict[str, bool] = {}
+    sos_scan_index: dict[str, int] = {}
+    sos_root_ids: dict[str, str] = {}
     dri_segment_info: Optional[Tuple[int, int, int, int]] = None
     dri_original_payload: Optional[bytes] = None
     dri_preview_payload: Optional[bytes] = None
@@ -219,11 +232,22 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     sof0_preview_payload: Optional[bytes] = None
     sof0_active_highlight: Optional[Tuple[int, int, str, str]] = None
     sof0_dirty = reactive(False)
+    sof_root_ids: dict[str, str] = {}
+    sof_render_retry_budget: dict[str, int] = {}
     plugin_ids: list[str] = []
     plugin_checkbox_ids: dict[str, str] = {}
     plugins_render_counter = reactive(0)
     plugin_panels: dict[str, VerticalScroll] = {}
     plugin_panel_tabs: dict[str, TabbedContent] = {}
+    entropy_trace_scans: dict[str, object] = {}
+    entropy_trace_pages: dict[str, int] = {}
+    entropy_trace_selected: dict[str, int] = {}
+    entropy_trace_item_ids: dict[str, dict[str, int]] = {}
+    entropy_trace_log_ids: dict[str, dict[str, str]] = {}
+    entropy_trace_item_counter = reactive(0)
+    entropy_trace_loaded = reactive(False)
+    entropy_trace_pending = reactive(False)
+    _entropy_trace_worker_serial = 0
     _suppress_input_path_changed = False
     _pending_input_load_token = 0
     _info_rebuild_serial = 0
@@ -297,6 +321,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
                     Input(value=self.defaults.output_dir, id="output-dir"),
                     Label("Color mode (auto|always|never)", classes="field"),
                     Input(value=self.defaults.color, id="color-mode"),
+                    Checkbox("Debug logging", value=self.defaults.debug, id="debug"),
                     id="input-fields",
                 ),
                 Vertical(
@@ -349,7 +374,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
                     Label("Step (cumulative/sequential)", classes="field"),
                     Input(value=str(self.defaults.step), id="step"),
                     Checkbox("Report only", value=self.defaults.report_only, id="report-only"),
-                    Checkbox("Debug logging", value=self.defaults.debug, id="debug"),
                     Static("", id="run-error"),
                     Button("Run", id="run-btn", variant="success"),
                     RichLog(id="log", highlight=True),
@@ -933,6 +957,8 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         self._add_appn_tab()
         self._add_dqt_tab()
         self._add_dht_tab()
+        self._add_sos_tab()
+        self._add_entropy_trace_tab()
         self._init_tools_tabs()
 
     def _add_info_tabs(self) -> None:
@@ -940,7 +966,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         tabs.add_pane(TabPane("General", RichLog(id="info-general", highlight=True)))
         tabs.add_pane(TabPane("Segments", RichLog(id="info-segments", highlight=True)))
         tabs.add_pane(TabPane("Details", RichLog(id="info-details", highlight=True)))
-        tabs.add_pane(TabPane("Entropy", RichLog(id="info-entropy", highlight=True)))
         tabs.add_pane(TabPane("Hex", self._build_full_hex_pane()))
 
     def _init_tools_tabs(self) -> None:
@@ -1429,19 +1454,26 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     def _populate_info_tabs(self, input_path: str, data: bytes, segments, entropy_ranges) -> None:
         self.info_data = data
         self.info_segments = segments
+        self.info_entropy_ranges = entropy_ranges
+        self.entropy_trace_loaded = False
+        self.entropy_trace_pending = False
         self.hex_page = 0
         self._info_rebuild_serial += 1
+        self._entropy_trace_worker_serial = self._info_rebuild_serial
 
-        general, segments_log, details_log, entropy_log = self._info_logs()
-        self._clear_info_logs(general, segments_log, details_log, entropy_log)
+        general, segments_log, details_log = self._info_logs()
+        self._clear_info_logs(general, segments_log, details_log)
         sof_targets = self._reset_sof_tabs(segments)
         appn_targets = self._reset_appn_tabs(segments)
         dqt_targets = self._reset_dqt_tabs(segments)
         dht_targets = self._reset_dht_tabs(segments)
+        sos_targets = self._reset_sos_tabs(segments)
+        self._reset_entropy_trace_tabs(None)
+        self._set_entropy_trace_status("Click Load Trace to decode entropy.")
+        self._set_entropy_trace_load_button(disabled=False, label="Load Trace")
         self._write_general(general, input_path, data, segments, entropy_ranges)
         self._write_segments(segments_log, segments, entropy_ranges, data)
         self._write_details(details_log, segments, data)
-        self._write_entropy(entropy_log, entropy_ranges)
         self.call_after_refresh(
             self._render_info_detail_tabs,
             data,
@@ -1450,18 +1482,20 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             appn_targets,
             dqt_targets,
             dht_targets,
+            sos_targets,
         )
 
     def _dynamic_pane_id(self, base: str) -> str:
         return f"{base}-{self._info_rebuild_serial}"
 
-    def _render_info_detail_tabs(self, data: bytes, segments, sof_targets, appn_targets, dqt_targets, dht_targets) -> None:
+    def _render_info_detail_tabs(self, data: bytes, segments, sof_targets, appn_targets, dqt_targets, dht_targets, sos_targets) -> None:
         try:
             self._render_app0_segment(data, segments)
         except Exception:
             # APP0 pane not present.
             pass
         self._render_sof_segments(data, sof_targets)
+        self.call_after_refresh(self._render_sof_segments, data, sof_targets)
         try:
             self._render_dri_segment(data, segments)
         except Exception:
@@ -1469,8 +1503,25 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         self._render_appn_segments(data, appn_targets)
         self._render_dqt_segments(data, dqt_targets)
         self._render_dht_segments(data, dht_targets)
+        self._render_sos_segments(data, sos_targets)
         self._render_full_hex_page()
         self._mark_app0_dirty(False)
+
+    def _start_entropy_trace_worker(self, data: bytes, segments, entropy_ranges, serial: int) -> None:
+        self.entropy_trace_pending = True
+
+        def _run():
+            for chunk in stream_entropy_scans(data, segments, entropy_ranges, chunk_mcus=256):
+                self.call_from_thread(self._apply_entropy_trace_chunk, serial, chunk)
+            return serial
+
+        self.run_worker(
+            _run,
+            exclusive=True,
+            name=f"entropy-trace-{serial}",
+            group="entropy-trace",
+            thread=True,
+        )
 
     def _load_info_data(self) -> Tuple[str, bytes, list, list]:
         input_path = self.query_one("#input-path", Input).value.strip()
@@ -1485,7 +1536,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             self.query_one("#info-general", RichLog),
             self.query_one("#info-segments", RichLog),
             self.query_one("#info-details", RichLog),
-            self.query_one("#info-entropy", RichLog),
         )
 
     def _clear_info_logs(self, *logs: RichLog) -> None:
@@ -1525,27 +1575,53 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         if unused:
             log.write("")
             log.write(Text("Unused sections:", style="grey50"))
-            log.write(Text("  " + ", ".join(unused), style="grey50"))
+            for line in self._format_unused_segment_lines(unused):
+                log.write(Text(f"  {line}", style="grey50"))
+        log.write("")
+        log.write(Text("Entropy-Coded Data Ranges:", style="grey50"))
+        if entropy_ranges:
+            for r in entropy_ranges:
+                log.write(
+                    f"  Scan {r.scan_index}: 0x{r.start:08X}..0x{r.end:08X} ({r.end - r.start} bytes)"
+                )
+        else:
+            log.write("  No entropy-coded data ranges found.")
 
     def _unused_segment_names(self, segments) -> list[str]:
         present = {seg.name for seg in segments}
         known = [MARKER_NAMES[marker] for marker in sorted(MARKER_NAMES)]
         return [name for name in known if name not in present]
 
+    def _format_unused_segment_lines(self, names: list[str]) -> list[str]:
+        families = ("APP", "SOF", "JPG")
+        grouped: list[str] = []
+        singles: list[str] = []
+        i = 0
+        while i < len(names):
+            name = names[i]
+            family = next((prefix for prefix in families if name.startswith(prefix) and name[len(prefix):].isdigit()), None)
+            if family is None:
+                singles.append(name)
+                i += 1
+                continue
+            run = [name]
+            j = i + 1
+            while j < len(names):
+                nxt = names[j]
+                if nxt.startswith(family) and nxt[len(family):].isdigit():
+                    run.append(nxt)
+                    j += 1
+                    continue
+                break
+            grouped.append(", ".join(run))
+            i = j
+        return grouped + singles
+
     def _write_details(self, log: RichLog, segments, data: bytes) -> None:
         for idx, seg in enumerate(segments):
             log.write(f"{idx:03d} {seg.name}")
             for line in explain_segment(seg, data):
                 log.write(f"  {line}")
-
-    def _write_entropy(self, log: RichLog, entropy_ranges) -> None:
-        if entropy_ranges:
-            for r in entropy_ranges:
-                log.write(
-                    f"Scan {r.scan_index}: 0x{r.start:08X}..0x{r.end:08X} ({r.end - r.start} bytes)"
-                )
-        else:
-            log.write("No entropy-coded data ranges found.")
 
     def _segment_health(self, segments, entropy_ranges, data: bytes):
         """
@@ -1909,6 +1985,30 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         """
         Handle worker completion for the run pipeline.
         """
+        if event.worker.name.startswith("entropy-trace-"):
+            if event.state == WorkerState.ERROR:
+                self.entropy_trace_pending = False
+                self.entropy_trace_loaded = False
+                self._set_entropy_trace_load_button(disabled=False, label="Load Trace")
+                self._set_entropy_trace_status(f"Trace failed: {event.worker.error}")
+                try:
+                    self._reset_entropy_trace_tabs([])
+                    log = self.query_one("#info-entropy-trace-empty", RichLog)
+                    log.clear()
+                    log.write(f"Entropy trace failed: {event.worker.error}")
+                except Exception:
+                    pass
+                return
+            if event.state != WorkerState.SUCCESS:
+                return
+            serial = event.worker.result
+            if serial != self._entropy_trace_worker_serial:
+                return
+            self.entropy_trace_pending = False
+            self.entropy_trace_loaded = True
+            self._set_entropy_trace_load_button(disabled=False, label="Reload Trace")
+            self._set_entropy_trace_status("Trace loaded.")
+            return
         if event.worker.name != "run":
             return
         if event.state == WorkerState.ERROR:

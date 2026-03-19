@@ -80,12 +80,21 @@ class FakeTabs:
 class FakeListView:
     def __init__(self) -> None:
         self.items: list[object] = []
+        self.index = 0
 
     def clear(self) -> None:
         self.items.clear()
 
     def append(self, item) -> None:
         self.items.append(item)
+
+
+class FakeContainer:
+    def __init__(self) -> None:
+        self.children: list[object] = []
+
+    def mount(self, widget) -> None:
+        self.children.append(widget)
 
 
 def install_query(app: JpegFaultTui, widgets: dict[str, object]) -> None:

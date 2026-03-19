@@ -49,6 +49,8 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
    - Supports mutation plugins selected from the CLI with `--mutation-plugin`
    - Validates plugin parameters centrally via repeated `plugin.param=value` flags
    - Provides richer host-prepared plugin context so built-in and future plugins can declare what they need instead of re-parsing everything themselves
+   - Includes a new scan-first entropy trace analysis that can decode baseline sequential JPEG scans into block-level bit provenance and coefficient traces
+   - The TUI reuses that tracer in the Info panel's Trace workspace instead of maintaining a separate entropy-decode path
 
 ## Files
 
@@ -64,6 +66,7 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 - `jpeg_fault/core/media.py` — GIF generation helpers
 - `jpeg_fault/core/ssim_analysis.py` — SSIM metrics and plotting pipeline
 - `jpeg_fault/core/wave_analysis.py` — Entropy stream wave and sliding-wave charts
+- `jpeg_fault/core/entropy_trace.py` — Baseline JPEG scan/block entropy tracing with bit and byte provenance
 - `jpeg_fault/core/plugins/_shared/dct_heatmap.py` — shared DC and AC-energy heatmap helpers for decoded DCT blocks
 - `jpeg_fault/core/analysis_types.py` — Analysis plugin contracts, parameter specs, and validation
 - `jpeg_fault/core/analysis_registry.py` — Analysis plugin registry and discovery
@@ -174,6 +177,7 @@ The TUI includes:
 - File browser with JPEG-only list
 - Input panel with live JPEG preview (ASCII thumbnail), dimensions, and size
 - Info tab with segment list, decoded details, entropy ranges, and full-hex view
+- Trace tab with one subtab per `SOS` / scan, a paged block list, and selected-block views for bit spans, DC/AC steps, coefficients, and table provenance
 - APP0 editor (simple fields + advanced raw hex) with live preview and save
 - SOFn tab with per-section subtabs; SOF0 keeps the editable frame-header workspace and other SOF markers are shown in read-only frame/components/tables views
 - DRI tab with restart-interval workspace: bytes/info on the left, summary/effect/edit views on the right
@@ -195,6 +199,7 @@ The plugin system now has two families:
 Current built-in plugin example:
 
 - `entropy_wave` analysis plugin
+- `entropy_trace` analysis plugin
 - `sliding_wave` analysis plugin
 - `dc_heatmap` analysis plugin
 - `ac_energy_heatmap` analysis plugin
@@ -247,6 +252,35 @@ Example with byte-only output plus CSV export:
 ```
 
 Note: `transform` is currently supported only for byte-mode entropy waves.
+
+The built-in `entropy_trace` plugin currently supports:
+
+- `out_path`: output trace path
+- `format`: `text` or `json` (default: `text`)
+
+The first implementation is baseline-sequential focused:
+
+- traces one tab-worthy stream per `SOS` / scan
+- records exact scan-relative bit spans and source file-byte provenance for each decoded block
+- records component, MCU index, Huffman table ids, quantization table id, DC/AC decode steps, and final coefficient arrays
+- recognizes progressive/refinement scans structurally but reports them as not yet fully block-traced
+
+Example text export:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --analysis entropy_trace \
+  --analysis-param entropy_trace.format=text
+```
+
+Example JSON export:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --analysis entropy_trace \
+  --analysis-param entropy_trace.format=json \
+  --analysis-param entropy_trace.out_path=trace.json
+```
 
 The built-in `sliding_wave` plugin currently supports:
 

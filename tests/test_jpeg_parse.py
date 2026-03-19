@@ -178,6 +178,8 @@ def test_dht_payload_roundtrip_and_sos_components() -> None:
         {"id": 2, "dc_table_id": 1, "ac_table_id": 1},
         {"id": 3, "dc_table_id": 1, "ac_table_id": 1},
     ]
+    rebuilt = jp.build_sos_payload(components, 0, 63, 0, 0)
+    assert rebuilt == sos_payload
 
 
 def test_sof0_payload_roundtrip() -> None:

@@ -476,6 +476,41 @@ def decode_sos_components(payload: bytes) -> List[Dict[str, int]]:
     return components
 
 
+def build_sos_payload(
+    components: List[Dict[str, int]],
+    ss: int,
+    se: int,
+    ah: int,
+    al: int,
+) -> bytes:
+    """
+    Build an SOS payload from component selectors and spectral/approximation fields.
+    """
+    if len(components) > 255:
+        raise ValueError("SOS component count must be 0..255.")
+    payload = bytearray()
+    payload.append(len(components) & 0xFF)
+    for component in components:
+        comp_id = int(component.get("id", 0))
+        dc_table_id = int(component.get("dc_table_id", 0))
+        ac_table_id = int(component.get("ac_table_id", 0))
+        if comp_id < 0 or comp_id > 255:
+            raise ValueError("SOS component id must be 0..255.")
+        if dc_table_id < 0 or dc_table_id > 15 or ac_table_id < 0 or ac_table_id > 15:
+            raise ValueError("SOS Huffman table ids must be 0..15.")
+        payload.append(comp_id & 0xFF)
+        payload.append(((dc_table_id & 0x0F) << 4) | (ac_table_id & 0x0F))
+    for value, name in ((ss, "Ss"), (se, "Se"), (ah, "Ah"), (al, "Al")):
+        if value < 0 or value > 255:
+            raise ValueError(f"SOS {name} must be 0..255.")
+    if ah > 15 or al > 15:
+        raise ValueError("SOS Ah and Al must be 0..15.")
+    payload.append(ss & 0xFF)
+    payload.append(se & 0xFF)
+    payload.append(((ah & 0x0F) << 4) | (al & 0x0F))
+    return bytes(payload)
+
+
 def decode_dri(payload: bytes) -> Optional[Dict[str, str]]:
     """
     Decode Define Restart Interval (DRI) payload into a restart interval value.

@@ -12,6 +12,8 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Added a separate mutation-plugin family and registry.
 - Strengthened plugin isolation with typed plugin params, declared plugin needs, and richer host-prepared plugin contexts.
 - Added a built-in `sliding_wave` analysis plugin with typed params and CSV export.
+- Added a new `entropy_trace` analysis plugin backed by a reusable `jpeg_fault/core/entropy_trace.py` baseline scan tracer.
+- Added a new TUI Info -> Trace workspace that reuses `jpeg_fault/core/entropy_trace.py` for per-scan block inspection.
 - Fixed TUI plugin panel initialization to respect Textual's real widget lifecycle.
 - Forced chart/heatmap modules onto the matplotlib `Agg` backend to avoid TUI worker thread crashes.
 - Added value-to-byte highlighting in structured SOF0, DQT, and DHT editors.
@@ -112,6 +114,12 @@ Current built-in plugin examples:
   - can render byte-only, bit-only, or combined wave output
   - supports first- and second-order derivative transforms for byte-mode output
   - can optionally export the selected stream data to CSV
+- `jpeg_fault/core/plugins/entropy_trace/plugin.py`
+  - declares typed params for `out_path` and `format`
+  - currently requests `source_bytes`, `parsed_jpeg`, and `entropy_ranges`
+  - writes either a human-readable text trace or JSON trace artifact
+  - is backed by `jpeg_fault/core/entropy_trace.py`, which traces baseline sequential scans into block-level bit spans, file-byte provenance, table provenance, and decoded coefficient data
+  - currently recognizes progressive/refinement scans structurally but reports them as unsupported for full block tracing
 - `jpeg_fault/core/plugins/sliding_wave/plugin.py`
   - declares typed params for `out_path`, `csv_path`, `window`, `stats`, and `transform`
   - currently requests `source_bytes` and `entropy_ranges`
@@ -181,6 +189,7 @@ Current wrap-up and next cleanup targets:
 - `jpeg_fault/core/media.py` builds GIFs from mutation outputs.
 - `jpeg_fault/core/ssim_analysis.py` computes metrics and writes charts.
 - `jpeg_fault/core/wave_analysis.py` writes entropy stream wave charts.
+- `jpeg_fault/core/entropy_trace.py` traces entropy scans into block-level decode events.
 - `jpeg_fault/core/plugins/_shared/dct_heatmap.py` writes DC/AC energy heatmaps.
 - `jpeg_fault/core/analysis_types.py` defines analysis plugin param specs, needs, contexts, and results.
 - `jpeg_fault/core/plugin_contexts.py` builds analysis and mutation plugin contexts for shared host use.
@@ -412,6 +421,29 @@ Functions:
 
 Tie-in:
 - Called by `api.run_wave_phase()` and `api.run_sliding_wave_phase()`.
+
+## File: `jpeg_fault/core/entropy_trace.py`
+**Purpose:** Decode baseline sequential entropy streams into scan/block trace artifacts with exact bit provenance.
+
+Key structures:
+- `ScanTrace`: one trace per `SOS` / scan, including scan metadata, support status, blocks, and restart-segment summaries.
+- `BlockTrace`: one decoded block event with scan-relative bit spans, byte spans, source file-byte offsets, component/table provenance, and coefficient results.
+- `DCCoefficientTrace` / `ACCoefficientTrace`: step-level DC and AC decode details.
+
+Key functions:
+- `trace_entropy_scans(data, segments, entropy_ranges) -> list[ScanTrace]`: traces all scans in a JPEG using existing SOF/SOS/DHT/DRI metadata.
+- `format_scan_trace_text(scans) -> str`: writes a readable per-scan text report for the plugin/frontend layer.
+
+Current scope:
+- baseline sequential (`SOF0`) scans are block-traced
+- scan splitting is one trace per `SOS`
+- restart markers are recognized and exposed as restart-segment summaries
+- progressive/refinement scans are recognized but returned as unsupported for full block tracing
+
+Current TUI integration:
+- Info -> Trace contains one subtab per scan
+- each scan tab contains a paged block list plus selected-block views for overview, bits, DC, AC, coefficients, and tables
+- the TUI reuses the shared core trace model rather than re-decoding entropy bits independently
 
 ## File: `jpeg_fault/core/plugins/_shared/dct_heatmap.py`
 **Purpose:** 8x8 DCT-based heatmaps computed from decoded image luminance.

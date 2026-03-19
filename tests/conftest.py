@@ -128,8 +128,74 @@ def rich_jpeg_path(tmp_path: Path, rich_jpeg_bytes: bytes) -> Path:
 
 
 @pytest.fixture
+def decodable_jpeg_bytes() -> bytes:
+    """
+    Return a tiny baseline JPEG whose entropy stream decodes to one all-zero block.
+    """
+    data = bytearray([0xFF, 0xD8])
+
+    dqt_payload = bytes([0x00] + [1] * 64)
+    data.extend([0xFF, 0xDB, 0x00, 0x43])
+    data.extend(dqt_payload)
+
+    sof0_payload = bytes([
+        0x08,
+        0x00, 0x08,
+        0x00, 0x08,
+        0x01,
+        0x01, 0x11, 0x00,
+    ])
+    data.extend([0xFF, 0xC0, 0x00, 0x0B])
+    data.extend(sof0_payload)
+
+    dht_payload = bytes(
+        [0x00] + [1] + [0] * 15 + [0x00] +
+        [0x10] + [1] + [0] * 15 + [0x00]
+    )
+    data.extend([0xFF, 0xC4, 0x00, 0x26])
+    data.extend(dht_payload)
+
+    sos_payload = bytes([
+        0x01,
+        0x01, 0x00,
+        0x00, 0x3F, 0x00,
+    ])
+    data.extend([0xFF, 0xDA, 0x00, 0x08])
+    data.extend(sos_payload)
+    data.extend([0x00])
+    data.extend([0xFF, 0xD9])
+    return bytes(data)
+
+
+@pytest.fixture
+def decodable_jpeg_path(tmp_path: Path, decodable_jpeg_bytes: bytes) -> Path:
+    p = tmp_path / "traceable.jpg"
+    p.write_bytes(decodable_jpeg_bytes)
+    return p
+
+
+@pytest.fixture
+def progressive_like_jpeg_bytes(decodable_jpeg_bytes: bytes) -> bytes:
+    """
+    Return a tiny JPEG-like byte stream that uses SOF2 to exercise unsupported progressive handling.
+    """
+    data = bytearray(decodable_jpeg_bytes)
+    sof_index = data.index(bytes([0xFF, 0xC0]))
+    data[sof_index + 1] = 0xC2
+    return bytes(data)
+
+
+@pytest.fixture
 def simple_entropy_ranges() -> list[EntropyRange]:
     """
     Return a simple entropy range list for unit tests.
     """
     return [EntropyRange(2, 8, 0)]
+
+
+@pytest.fixture
+def dsc04780_jpeg_bytes() -> bytes:
+    """
+    Return the repo JPEG that uses restart markers and non-default component ids.
+    """
+    return (ROOT / "DSC04780.jpg").read_bytes()
