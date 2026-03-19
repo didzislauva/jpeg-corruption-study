@@ -175,19 +175,20 @@ Use a binary payload file:
 
 The TUI includes:
 - File browser with JPEG-only list
-- Input panel with live JPEG preview (ASCII thumbnail), dimensions, and size
-- Info tab with segment list, decoded details, entropy ranges, and full-hex view
-- Trace tab with one subtab per `SOS` / scan, a paged block list, and selected-block views for bit spans, DC/AC steps, coefficients, and table provenance
+- Input panel with live JPEG preview (ASCII thumbnail), dimensions, size, and a `Debug logging` toggle
+- Info tab with segment list, decoded details, entropy ranges inside `Segments`, and full-hex view
+- Trace workspace with one subtab per `SOS` / scan, a paged MCU/block list, manual `Load Trace` control, and selected-block views for bit spans, DC/AC steps, coefficients, and table provenance
 - APP0 editor (simple fields + advanced raw hex) with live preview and save
 - SOFn tab with per-section subtabs; SOF0 keeps the editable frame-header workspace and other SOF markers are shown in read-only frame/components/tables views
+- SOS tab with per-scan header/components/flow/links/edit views and structured/raw editing
 - DRI tab with restart-interval workspace: bytes/info on the left, summary/effect/edit views on the right
 - APPn tab with per-segment subtabs (APP1/APP2 decoded, others shown read-only)
 - DHT tab with per-segment workspaces: bytes/info on the left, table/counts/symbols/usage/codes/edit views on the right
 - APP1 EXIF decoder with annotated hex/raw/table views and editable headers/IFDs
 - APP2 ICC profile decoder with editable header/tags and live hex updates
 - DQT tab with per-segment workspaces: bytes/info on the left, grid/zigzag/stats/usage/heatmap/edit views on the right
-- Tools tab with a custom APPn writer
 - Plugin panels for analysis-specific tools (currently includes entropy-wave, sliding-wave, DC-heatmap, and AC-energy output tabs; all four are launched there instead of from the Outputs panel)
+- Plugin mutation tabs for `55` and `aa`, plus a `Tools` plugin tab for `insert_appn`
 
 ### Plugins
 
@@ -208,7 +209,8 @@ Built-in mutation plugin examples:
 
 - `55` mutation plugin: writes independent outputs that replace sampled entropy bytes with `0x55`
 - `aa` mutation plugin: writes independent outputs that replace sampled entropy bytes with `0xAA`
-- both are also exposed as TUI plugin tabs under `Plugin Mutations`
+- `insert_appn` mutation plugin: inserts one custom APPn segment and writes a new JPEG
+- `55` and `aa` are exposed under `Plugin Mutations`; `insert_appn` is exposed under `Tools`
 
 The legacy built-in wave options are still available:
 
@@ -380,6 +382,7 @@ Plugin contracts are now more isolated than before:
 - Info → APP0 shows decoded fields with color-matched hex preview.
 - APP0 editor updates the preview live and writes a new file on save.
 - Info → SOFn groups all SOF markers into subtabs; SOF0 remains editable and other SOF markers are shown as decoded read-only frame views.
+- Info → SOS groups all SOS markers into subtabs and exposes scan-header editing plus scan/component linkage views.
 - Info → DRI shows restart interval bytes, decoded effect, and editable payload views.
 - Info → APPn groups all APP segments and auto-selects the first available tab.
 - Info → DHT shows raw bytes plus table, counts, symbols, usage, canonical-code, and edit views per DHT segment.
@@ -387,9 +390,13 @@ Plugin contracts are now more isolated than before:
 - Info → APP2 shows ICC header + tag table with structured decoding.
 - Info → DQT shows raw bytes plus natural-grid, zigzag, stats, usage, heatmap, and edit views per DQT segment.
 - Info → Hex provides a full-file hex view with segment coloring and a clickable legend.
-- Structured editors for SOF0, DRI, DHT, and DQT refresh the byte-level preview live.
-- SOF0, DQT, and DHT structured editors can highlight the corresponding serialized bytes in the left hex view when the caret is on a value.
+- Structured editors for SOF0, SOS, DRI, DHT, and DQT refresh the byte-level preview live.
+- SOF0, SOS, DQT, and DHT structured editors can highlight the corresponding serialized bytes in the left hex view when the caret is on a value.
 - DQT and DHT structured editors keep the active editor stable while typing; the alternate raw/structured editor syncs when switching modes.
+- APPn insertion now runs through the `insert_appn` mutation plugin and is exposed under the plugin-hosted `Tools` panel.
+- The generic `Plugins` panel is now a read-only analysis inventory: entries appear as always-on clickable items, and clicking one shows its help/details in the right column.
+- SOF and SOS pane rendering now uses pane-scoped widget lookup to avoid stale `query_one(...)` hits after image reloads.
+- When `Debug logging` is enabled, targeted TUI diagnostics write to `/tmp/jpeg_trace_debug.log`, `/tmp/jpeg_sos_debug.log`, and `/tmp/jpeg_sof_debug.log`.
 - Plugin panels are initialized after the Textual widget tree is ready; this fixed earlier startup crashes around dynamic `TabbedContent` population.
 - Chart-producing analyses now force matplotlib onto the `Agg` backend so TUI-triggered runs do not hit Tk/thread crashes like `Tcl_AsyncDelete`.
 - Exit the TUI with `q`. If the terminal is left in a bad state after an external crash, `reset` restores it.

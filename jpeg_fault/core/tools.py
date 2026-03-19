@@ -1,6 +1,4 @@
-"""
-Utility helpers for inserting custom APPn segments into JPEG files.
-"""
+"""Utility helpers for inserting custom APPn segments into JPEG files."""
 
 from __future__ import annotations
 
@@ -50,6 +48,19 @@ def insert_custom_appn(data: bytes, appn: int, payload: bytes) -> bytes:
     return data[:offset] + seg + data[offset:]
 
 
+def resolve_appn_payload(payload_hex: str, payload_file: str, identifier: str) -> bytes:
+    """Build the final APPn payload from mutually exclusive hex/file inputs."""
+    if bool(payload_hex) == bool(payload_file):
+        raise ValueError("Exactly one of payload hex or payload file is required.")
+    if payload_hex:
+        payload = read_payload_hex(payload_hex)
+    else:
+        payload = Path(payload_file).read_bytes()
+    if identifier:
+        payload = identifier.encode("ascii", errors="strict") + payload
+    return payload
+
+
 def read_payload_hex(text: str) -> bytes:
     """
     Parse a hex string with whitespace into bytes.
@@ -78,3 +89,11 @@ def output_path_for(input_path: str, appn: int, out_path: str | None) -> str:
         return out_path
     p = Path(input_path)
     return str(p.with_name(f"{p.stem}_app{appn:02d}.jpg"))
+
+
+def mutation_output_path_for(input_path: str, output_dir: str, appn: int, out_path: str | None) -> str:
+    """Resolve mutation-plugin output path for an APPn-inserted file."""
+    if out_path:
+        return out_path
+    p = Path(input_path)
+    return str(Path(output_dir) / f"{p.stem}_app{appn:02d}.jpg")

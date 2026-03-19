@@ -124,20 +124,25 @@ All real logic lives under:
 - The built-in analysis plugins now include `entropy_wave`, `entropy_trace`, `sliding_wave`, `dc_heatmap`, and `ac_energy_heatmap`.
 - `entropy_trace` now provides a plugin-first baseline sequential scan tracer that maps scan bits to decoded blocks, coefficients, and source file-byte provenance.
 - The TUI Info panel now includes a Trace workspace that reuses `entropy_trace.py` for per-scan block inspection.
-- The built-in mutation plugins now include `mutation_55` and `mutation_aa`.
+- The built-in mutation plugins now include `mutation_55`, `mutation_aa`, and `mutation_insert_appn`.
 - `dc_heatmap` and `ac_energy_heatmap` now expose `cmap`, `plane_mode`, and `block_size`, and default unnamed outputs to descriptive filenames in the current working directory.
 - The TUI now launches the migrated wave/DC/AC analyses through the `Graphic Output` plugin tabs instead of the old dedicated Outputs-panel fields.
 - The TUI `Core Mutations` page now combines mutation settings, strategy settings, and Run controls, plus a help column with an equivalent CLI command.
-- The TUI also exposes `55` and `aa` under the `Plugin Mutations` panel.
+- The TUI exposes `55` and `aa` under `Plugin Mutations`, and `insert_appn` under the plugin-hosted `Tools` panel.
+- The generic `Plugins` panel is now a read-only clickable inventory for analysis plugins; clicking an entry shows help/details instead of toggling selection.
 - The TUI Segments pane now lists unused standard JPEG sections in a muted block under the detected segments.
-- SOF0, DQT, and DHT structured editors can highlight the corresponding serialized bytes in their left hex views based on the current value selection.
+- SOF0, SOS, DQT, and DHT structured editors can highlight the corresponding serialized bytes in their left hex views based on the current value selection.
 - SOF markers are now grouped under an outer SOFn tab with one subtab per frame section.
+- SOS markers now have a dedicated editable workspace with header/components/flow/links/edit views.
+- SOF and SOS pane rendering now scopes widget lookup through the active pane root, and targeted debug logs can be written to `/tmp/jpeg_sof_debug.log` and `/tmp/jpeg_sos_debug.log` when `Debug logging` is enabled.
 - Plugin context building now lives in a shared helper layer used by both `api.py` and the TUI instead of relying on API-private helpers.
 - Analysis and mutation registry loading now share one package-scanning helper instead of duplicating loader logic.
 - APP2 editor plumbing now centralizes ICC field collection/update generation, and all APP2 edit inputs trigger preview refresh consistently.
 - JPEG/EXIF/ICC protocol constants now live under `jpeg_fault/core/constants/` instead of being repeated inline across parser and TUI code.
 - `debug.py` is now just the lightweight debug logging layer; the unused instrumentation scaffolding was removed.
-- The full test suite is currently green: `129 passed` in the latest run.
+- The latest focused TUI verification is green:
+  - `71 passed` for `tests/test_tui_segments.py tests/test_tui_plugins.py tests/test_tui_app2.py tests/test_mutation_plugins_builtin.py`
+  - `20 passed` for `tests/test_tui_plugins.py tests/test_tui_options.py tests/test_tui_app2.py`
 
 ## Current Mutation UX Notes
 
@@ -873,22 +878,23 @@ Fallback:
 The project includes a Textual fullscreen TUI:
 
 - Launch with `./jpg_fault_tolerance.py --tui` (alias `--gui`)
-- Left menu: Input/Info/Tools/Mutation/Outputs/Plugins
+- Left menu: Input/Info/Mutation/Outputs/Plugins
 - File browser shows directories; a JPEG-only list is shown for selection
 - Selecting a JPEG auto-loads Info views and updates the preview
 
 ### Info Tabs
 
 - General: file size, segments, scans, entropy bytes
-- Segments: per-segment summary with health status and issues
+- Segments: per-segment summary with health status, entropy ranges, and issues
 - Details: per-segment explanations
-- Entropy: scan ranges
 - APP0: decoded fields + colorized hex view
 - SOFn: per-section subtabs; SOF0 keeps frame/components/tables/edit views and other SOF markers are read-only
+- SOS: per-section subtabs with header/components/flow/links/edit views
 - DRI: restart-interval workspace with summary/effect/edit views
 - APPn: per-segment subtabs for APP1 (EXIF) and APP2 (ICC)
 - DHT: per-segment Huffman-table workspaces with bytes/info, counts, symbols, usage, codes, and edit views
 - DQT: per-segment quantization-table workspaces with bytes/info, grid, zigzag, stats, usage, heatmap, and edit views
+- Trace: per-scan manual-load entropy tracing with paged MCU/block navigation
 - Hex: full-file hex view with segment coloring and clickable legend
 
 ### Segment Health Checks
@@ -905,20 +911,22 @@ The project includes a Textual fullscreen TUI:
 - Live preview updates decoded + hex view on edit
 - Saves a new file (`*_app0_edit.jpg`)
 
-### SOF0 / DRI / DHT / DQT Editors
+### SOF0 / SOS / DRI / DHT / DQT Editors
 
 - SOF0 now lives inside the outer SOFn section and keeps a dedicated frame-header workspace with structured/raw editing and live preview.
+- SOS has a dedicated scan-header workspace with structured/raw editing, component linkage, and live preview.
 - DRI has a dedicated restart-interval workspace with structured/raw editing and live preview.
 - DHT has a dedicated Huffman-table workspace with structured/raw editing and canonical-code/usage views.
 - DQT has a dedicated quantization-table workspace with structured/raw editing, grid/zigzag/stats/usage/heatmap views.
-- SOF0, DQT, and DHT can highlight serialized bytes in the left hex pane when the caret is on a structured-editor value.
+- SOF0, SOS, DQT, and DHT can highlight serialized bytes in the left hex pane when the caret is on a structured-editor value.
 - DHT and DQT keep the active editor stable while typing; raw/structured editor content syncs when switching modes.
 
-### Tools Tab
+### `insert_appn` Mutation Plugin
 
-- APPn Writer: inserts a custom APPn segment with payload hex or file
-- Inserts after the last APPn segment near file start
-- Payload limit: 65,533 bytes
+- inserts a custom APPn segment with payload hex or file
+- inserts after the last APPn segment near file start
+- writes one segment-level output JPEG through the mutation-plugin pipeline
+- payload limit: 65,533 bytes
 
 
 ## API Layer
@@ -933,7 +941,7 @@ All new functions should be modular and kept to 60 lines or fewer where
 practical. If a function grows beyond this, refactor into helper functions.
 
 
-## Tools: Custom APPn Writer
+## APPn Insertion Helper
 
 There is a separate helper CLI for inserting custom APPn segments:
 
@@ -954,14 +962,17 @@ Implementation:
 - Textual TUI is the primary interactive UI (`--tui`), with:
   - File browser + JPEG-only list
   - Live preview panel with dimensions/size
-  - Info tabs (General/Segments/Details/Entropy/APP0/SOFn/DRI/APPn/DHT/DQT/Hex)
+  - Info tabs (General/Segments/Details/APP0/SOFn/SOS/DRI/APPn/DHT/DQT/Trace/Hex)
   - APP0 editor (simple + advanced, live preview, save new file)
   - SOFn workspace with editable SOF0 and read-only other SOF markers
+  - SOS workspace/editor
   - DRI workspace/editor
   - DHT workspace/editor
   - DQT workspace/editor
   - APP1 EXIF decoder/editor and APP2 ICC decoder/editor
-  - Tools tab with APPn writer
+  - Plugin Mutations tabs for `55` and `aa`
+  - Tools plugin tab for `insert_appn`
+  - generic Plugins panel as a read-only clickable analysis inventory
 - API layer (`jpeg_fault/core/api.py`) is the stable integration surface for UI layers.
 - Function size guideline: keep functions ≤ 60 lines; refactor as needed.
 

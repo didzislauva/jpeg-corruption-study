@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from jpeg_fault.core.tools import insert_custom_appn, output_path_for, read_payload_hex
+from jpeg_fault.core.tools import insert_custom_appn, output_path_for, resolve_appn_payload
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,19 +41,9 @@ def main() -> int:
     if args.cmd != "insert-appn":
         return 2
 
-    if bool(args.payload_hex) == bool(args.payload_file):
-        print("Error: exactly one of --payload-hex or --payload-file is required.")
-        return 2
-
     data = Path(args.input).read_bytes()
-    if args.payload_hex:
-        payload = read_payload_hex(args.payload_hex)
-    else:
-        payload = Path(args.payload_file).read_bytes()
-    if args.identifier:
-        payload = args.identifier.encode("ascii", errors="strict") + payload
-
     try:
+        payload = resolve_appn_payload(args.payload_hex or "", args.payload_file or "", args.identifier or "")
         out_data = insert_custom_appn(data, args.appn, payload)
     except ValueError as e:
         print(f"Error: {e}")

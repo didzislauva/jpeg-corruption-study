@@ -77,7 +77,6 @@ from ..jpeg_parse import (
 )
 from ..mutate import total_entropy_length
 from ..report import explain_segment
-from ..tools import insert_custom_appn, output_path_for, read_payload_hex
 from ..entropy_trace import stream_entropy_scans
 
 from .segments_basic import TuiSegmentsBasicMixin
@@ -235,7 +234,8 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
     sof_root_ids: dict[str, str] = {}
     sof_render_retry_budget: dict[str, int] = {}
     plugin_ids: list[str] = []
-    plugin_checkbox_ids: dict[str, str] = {}
+    plugin_button_ids: dict[str, str] = {}
+    selected_plugin_info_id: str = ""
     plugins_render_counter = reactive(0)
     plugin_panels: dict[str, VerticalScroll] = {}
     plugin_panel_tabs: dict[str, TabbedContent] = {}
@@ -262,14 +262,12 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
             with ListView(id="menu"):
                 yield ListItem(Label("Input & Output"), id="menu-input")
                 yield ListItem(Label("Info"), id="menu-info")
-                yield ListItem(Label("Tools"), id="menu-tools")
                 yield ListItem(Label("Core Mutations"), id="menu-mutation")
                 yield ListItem(Label("Outputs"), id="menu-outputs")
                 yield ListItem(Label("Plugins"), id="menu-plugins")
             with Container(id="panel"):
                 yield self._build_input_panel()
                 yield self._build_info_panel()
-                yield self._build_tools_panel()
                 yield self._build_mutation_panel()
                 yield self._build_outputs_panel()
                 yield self._build_plugins_panel()
@@ -606,15 +604,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
         self._refresh_mutation_help()
         self._refresh_mutation_plugin_help()
 
-    def _build_tools_panel(self) -> VerticalScroll:
-        panel = VerticalScroll(
-            Label("Tools", classes="panel-title"),
-            Static("Utility helpers for manipulating JPEG files.", classes="field"),
-            TabbedContent(id="tools-tabs"),
-            id="panel-tools",
-        )
-        panel.display = False
-        return panel
     def _build_info_panel(self) -> VerticalScroll:
         panel = VerticalScroll(
             TabbedContent(id="info-tabs"),
@@ -650,10 +639,19 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
     def _build_plugins_panel(self) -> VerticalScroll:
         panel = VerticalScroll(
             Label("Plugins", classes="panel-title"),
-            Static("Select analysis plugins to run.", classes="field"),
-            Static("Detected format: unknown", classes="field", id="plugins-format"),
-            Static("Available plugins", classes="field"),
-            Vertical(id="plugins-list"),
+            Static("Read-only analysis plugin inventory.", classes="field"),
+            Horizontal(
+                VerticalScroll(
+                    Static("Detected format: unknown", classes="field", id="plugins-format"),
+                    Static("Available plugins", classes="field"),
+                    Vertical(id="plugins-list"),
+                ),
+                VerticalScroll(
+                    Static("Plugin details", classes="field"),
+                    Static("Click a plugin entry to inspect it.", classes="field", id="plugins-help"),
+                ),
+                classes="row",
+            ),
             id="panel-plugins",
         )
         panel.display = False
@@ -795,6 +793,8 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
         help_widget.update(self._mutation_plugin_help_text(plugin))
 
     def _mutation_plugin_help_text(self, plugin) -> str:
+        if plugin.id == "insert_appn":
+            return self._insert_appn_plugin_help_text(plugin)
         strategy = self._select_value("#mutation-apply", default="independent")
         repeats = self._input_value("#repeats", default="1") or "1"
         step = self._input_value("#step", default="1") or "1"
@@ -815,6 +815,20 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
         lines.append(f"Outputs are written under {self._input_value('#output-dir', default='mutations') or 'mutations'}.")
         return "\n\n".join(lines)
 
+    def _insert_appn_plugin_help_text(self, plugin) -> str:
+        appn = self._plugin_param_value_by_name(plugin.id, "appn") or "15"
+        output_dir = self._input_value("#output-dir", default="mutations") or "mutations"
+        appn_label = appn
+        try:
+            appn_label = f"{int(appn):02d}"
+        except ValueError:
+            pass
+        lines = [f"{plugin.label} writes one segment-level JPEG output through the mutation-plugin pipeline."]
+        lines.append(f"It inserts one APP{appn_label} segment near the start of the file, after existing APPn markers.")
+        lines.append("Provide exactly one payload source: payload hex or payload file. Identifier is an optional ASCII prefix.")
+        lines.append(f"If no explicit output path is provided, the file is written under {output_dir}.")
+        return "\n\n".join(lines)
+
     def _plugin_param_value_by_name(self, plugin_id: str, name: str) -> str:
         selector = f"#plugin-{plugin_id}-{name.replace('_', '-')}"
         return self._input_value(selector)
@@ -831,6 +845,13 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
             if widget_id.startswith(prefix):
                 return plugin.id
         return None
+
+    def _plugin_info_id_from_button_id(self, button_id: str) -> str | None:
+        if not button_id.startswith("plugin-info-"):
+            return None
+        body = button_id.replace("plugin-info-", "", 1)
+        plugin_id, _sep, _render = body.rpartition("-")
+        return plugin_id or None
 
     def _append_list_view_item(self, list_view: object, item: ListItem) -> None:
         append = getattr(list_view, "append", None)
@@ -924,8 +945,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
             self._show_panel("input")
         elif item_id == "menu-info":
             self._show_panel("info")
-        elif item_id == "menu-tools":
-            self._show_panel("tools")
         elif item_id == "menu-mutation":
             self._show_panel("mutation")
         elif item_id == "menu-outputs":
@@ -940,7 +959,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
         self.current_panel = name
         self.query_one("#panel-input").display = name == "input"
         self.query_one("#panel-info").display = name == "info"
-        self.query_one("#panel-tools").display = name == "tools"
         self.query_one("#panel-mutation").display = name == "mutation"
         self.query_one("#panel-outputs").display = name == "outputs"
         self.query_one("#panel-plugins").display = name == "plugins"
@@ -959,7 +977,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
         self._add_dht_tab()
         self._add_sos_tab()
         self._add_entropy_trace_tab()
-        self._init_tools_tabs()
 
     def _add_info_tabs(self) -> None:
         tabs = self.query_one("#info-tabs", TabbedContent)
@@ -967,35 +984,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
         tabs.add_pane(TabPane("Segments", RichLog(id="info-segments", highlight=True)))
         tabs.add_pane(TabPane("Details", RichLog(id="info-details", highlight=True)))
         tabs.add_pane(TabPane("Hex", self._build_full_hex_pane()))
-
-    def _init_tools_tabs(self) -> None:
-        """
-        Initialize the Tools tab panes after the widget tree is mounted.
-        """
-        tools = self.query_one("#tools-tabs", TabbedContent)
-        tools.add_pane(
-            TabPane(
-                "APPn Writer",
-                VerticalScroll(
-                    Label("Input JPEG path", classes="field"),
-                    Input(value=self.defaults.input_path, id="tool-appn-input"),
-                    Label("APPn index (0..15)", classes="field"),
-                    Input(value="15", id="tool-appn-index"),
-                    Label("Identifier (optional ASCII prefix)", classes="field"),
-                    Input(value="", id="tool-appn-ident"),
-                    Label("Payload hex (whitespace ok)", classes="field"),
-                    TextArea("", id="tool-appn-hex", soft_wrap=True),
-                    Label("Payload file (optional)", classes="field"),
-                    Input(value="", id="tool-appn-file"),
-                    Label("Output path (optional)", classes="field"),
-                    Input(value="", id="tool-appn-output"),
-                    Button("Insert APPn", id="tool-appn-insert", variant="success"),
-                    Static("", id="tool-appn-error"),
-                    RichLog(id="tool-appn-log", highlight=True),
-                    id="tool-appn-pane",
-                ),
-            )
-        )
 
     def _set_current_dir(self, path: Path) -> None:
         """
@@ -1181,34 +1169,70 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
         self.plugin_ids = [plugin.id for plugin in plugins]
         self.plugins_render_counter += 1
         render_id = self.plugins_render_counter
-        self.plugin_checkbox_ids = {}
+        self.plugin_button_ids = {}
         if not plugins:
             list_container.mount(Static("No plugins registered.", classes="field"))
+            try:
+                self.query_one("#plugins-help", Static).update("No analysis plugins registered.")
+            except QUERY_ERRORS:
+                pass
             return
-        selected_defaults = {p.strip() for p in self.defaults.analysis.split(",") if p.strip()}
         for plugin in plugins:
             formats = ", ".join(sorted(plugin.supported_formats))
-            label = f"{plugin.id}: {plugin.label} (formats: {formats})"
-            cb = Checkbox(label, value=(plugin.id in selected_defaults))
-            cb.id = f"plugin-{plugin.id}-{render_id}"
-            cb.disabled = fmt not in plugin.supported_formats
-            list_container.mount(cb)
-            self.plugin_checkbox_ids[plugin.id] = cb.id
+            prefix = "[on]" if fmt in plugin.supported_formats else "[off]"
+            label = f"{prefix} {plugin.id}: {plugin.label} (formats: {formats})"
+            button = Button(label, id=f"plugin-info-{plugin.id}-{render_id}", classes="plugin-info")
+            list_container.mount(button)
+            self.plugin_button_ids[plugin.id] = button.id
+        self.selected_plugin_info_id = plugins[0].id
+        self._update_analysis_plugin_help(plugins[0].id, plugins[0], fmt)
         self._refresh_mutation_help()
 
     def _selected_plugins_csv(self) -> str:
-        selected: list[str] = []
-        for plugin_id in self.plugin_ids:
-            try:
-                cb_id = self.plugin_checkbox_ids.get(plugin_id)
-                if not cb_id:
-                    continue
-                cb = self.query_one(f"#{cb_id}", Checkbox)
-            except QUERY_ERRORS:
-                continue
-            if cb.value:
-                selected.append(plugin_id)
-        return ",".join(selected)
+        return ""
+
+    def _analysis_plugin_help_text(self, plugin, fmt: str) -> str:
+        lines = [f"{plugin.label} (`{plugin.id}`)"]
+        formats = ", ".join(sorted(plugin.supported_formats))
+        lines.append(f"Supported formats: {formats}")
+        lines.append(f"Detected format supported: {'yes' if fmt in plugin.supported_formats else 'no'}")
+        needs = ", ".join(sorted(getattr(plugin, "needs", ()) or ())) or "none"
+        lines.append(f"Host-provided needs: {needs}")
+        requires_mutations = getattr(plugin, "requires_mutations", False)
+        lines.append(f"Requires generated mutation outputs: {'yes' if requires_mutations else 'no'}")
+        specs = tuple(getattr(plugin, "params_spec", ()) or ())
+        if not specs:
+            lines.append("Params: none")
+            return "\n".join(lines)
+        lines.append("Params:")
+        for spec in specs:
+            required = "required" if spec.required else "optional"
+            default = "" if spec.default is None else f", default={spec.default}"
+            desc = f"- {spec.name} ({spec.type}, {required}{default})"
+            if spec.help:
+                desc += f": {spec.help}"
+            lines.append(desc)
+        return "\n".join(lines)
+
+    def _update_analysis_plugin_help(self, plugin_id: str, plugin=None, fmt: str | None = None) -> None:
+        if plugin is None:
+            load_plugins(debug=False)
+            plugin = get_plugin(plugin_id)
+        if plugin is None:
+            return
+        if fmt is None:
+            input_path = self._input_value("#input-path")
+            fmt = "unknown"
+            if input_path and Path(input_path).exists():
+                try:
+                    fmt = detect_format(input_path)
+                except Exception:
+                    fmt = "unknown"
+        try:
+            help_widget = self.query_one("#plugins-help", Static)
+        except QUERY_ERRORS:
+            return
+        help_widget.update(self._analysis_plugin_help_text(plugin, fmt))
 
     def _apply_editor_mode_visibility(
         self,
@@ -1756,48 +1780,6 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
             return b""
         return bytes.fromhex(compact)
 
-    @on(Button.Pressed, "#tool-appn-insert")
-    def _on_tool_appn_insert(self) -> None:
-        """
-        Insert a custom APPn segment into the selected JPEG.
-        """
-        err = self.query_one("#tool-appn-error", Static)
-        log = self.query_one("#tool-appn-log", RichLog)
-        err.update("")
-        log.clear()
-
-        input_path = self.query_one("#tool-appn-input", Input).value.strip()
-        if not input_path:
-            err.update("Error: input path is required.")
-            return
-        try:
-            appn = int(self.query_one("#tool-appn-index", Input).value.strip())
-        except ValueError:
-            err.update("Error: APPn index must be an integer.")
-            return
-        ident = self.query_one("#tool-appn-ident", Input).value
-        payload_hex = self.query_one("#tool-appn-hex", TextArea).text.strip()
-        payload_file = self.query_one("#tool-appn-file", Input).value.strip()
-        output_path = self.query_one("#tool-appn-output", Input).value.strip()
-
-        if bool(payload_hex) == bool(payload_file):
-            err.update("Error: provide exactly one of payload hex or payload file.")
-            return
-        try:
-            data = Path(input_path).read_bytes()
-            if payload_hex:
-                payload = read_payload_hex(payload_hex)
-            else:
-                payload = Path(payload_file).read_bytes()
-            if ident:
-                payload = ident.encode("ascii", errors="strict") + payload
-            out_data = insert_custom_appn(data, appn, payload)
-            out_path = output_path_for(input_path, appn, output_path or None)
-            Path(out_path).write_bytes(out_data)
-            log.write(f"Wrote {out_path} (APP{appn:02d}, payload={len(payload)} bytes)")
-        except Exception as e:
-            err.update(f"Error: {e}")
-
     def _hex_dump(self, data: bytes, start: int, length: int, ranges) -> list[Text]:
         """
         Build a colored hex dump with offsets and ASCII column.
@@ -1856,6 +1838,14 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsSosMixin, TuiSegmentsT
             return
         plugin_id = button_id.replace("plugin-run-", "", 1)
         self._run_plugin(plugin_id)
+
+    @on(Button.Pressed, ".plugin-info")
+    def _on_plugin_info_pressed(self, event: Button.Pressed) -> None:
+        plugin_id = self._plugin_info_id_from_button_id(event.button.id or "")
+        if not plugin_id:
+            return
+        self.selected_plugin_info_id = plugin_id
+        self._update_analysis_plugin_help(plugin_id)
 
     def _plugin_status(self, plugin_id: str, message: str) -> None:
         try:

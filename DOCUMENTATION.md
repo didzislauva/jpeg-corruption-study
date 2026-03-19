@@ -16,8 +16,11 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Added a new TUI Info -> Trace workspace that reuses `jpeg_fault/core/entropy_trace.py` for per-scan block inspection.
 - Fixed TUI plugin panel initialization to respect Textual's real widget lifecycle.
 - Forced chart/heatmap modules onto the matplotlib `Agg` backend to avoid TUI worker thread crashes.
-- Added value-to-byte highlighting in structured SOF0, DQT, and DHT editors.
+- Added a full SOS TUI workspace with structured/raw editing, scan/component linkage views, and live preview.
+- Added value-to-byte highlighting in structured SOF0, SOS, DQT, and DHT editors.
 - Reworked the SOF pane into per-section SOFn subtabs, keeping SOF0 editable and other SOF markers read-only.
+- Hardened SOF and SOS panes against stale widget lookup after image reloads by scoping lookups through the active pane root.
+- Added targeted TUI debug logs for Trace, SOS, and SOF under `/tmp/jpeg_trace_debug.log`, `/tmp/jpeg_sos_debug.log`, and `/tmp/jpeg_sof_debug.log` when `Debug logging` is enabled.
 - Added an unused-sections list to the Info → Segments view.
 - Moved plugin context building into a shared `jpeg_fault/core/plugin_contexts.py` helper used by both the API layer and the TUI.
 - Deduplicated analysis and mutation plugin discovery behind a shared `jpeg_fault/core/plugin_loader.py` helper.
@@ -27,7 +30,7 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Added dedicated `jpeg_fault/core/constants/` modules for JPEG/EXIF/ICC protocol mappings so repeated constants live in one place instead of being scattered across parser and TUI code.
 - Removed unused debug instrumentation helpers and kept `debug.py` focused on lightweight debug logging.
 - Updated tests and docs.
-- The full test suite currently passes (`129 passed` in the latest run).
+- The latest focused TUI verification passed, including segment-editor and plugin-panel coverage (`66 passed` in the last broad focused run, with `51 passed` in the latest `tests/test_tui_segments.py` run).
 
 ## Dependency Model
 - Python 3.8+ is the baseline runtime.
@@ -139,6 +142,11 @@ Current built-in plugin examples:
   - currently requests `source_bytes` and `entropy_ranges`
   - supports typed `sample` and `seed` params
   - also registers a TUI plugin tab under the `Plugin Mutations` panel
+- `jpeg_fault/core/plugins/mutation_insert_appn/plugin.py`
+  - writes one segment-level JPEG output that inserts a custom APPn segment
+  - currently requests `source_bytes`
+  - supports typed `appn`, `identifier`, `payload_hex`, `payload_file`, and `output_path` params
+  - also registers a TUI plugin tab under the plugin-hosted `Tools` panel
 - `jpeg_fault/core/plugins/ac_energy_heatmap/plugin.py`
   - declares typed params for `out_path`, `cmap`, `plane_mode`, and `block_size`
   - currently keeps the shared decoded-image heatmap implementation in `plugins/_shared/dct_heatmap.py`
@@ -490,11 +498,13 @@ Functions:
 - `build_appn_segment(appn, payload) -> bytes`: Build raw APPn segment bytes.
 - `_default_insertion_offset(segments) -> int`: Determine insertion position (after last APPn).
 - `insert_custom_appn(data, appn, payload) -> bytes`: Insert APPn into JPEG data.
+- `resolve_appn_payload(payload_hex, payload_file, identifier) -> bytes`: Resolve mutually exclusive hex/file payload inputs and optional identifier prefix.
 - `read_payload_hex(text) -> bytes`: Parse hex payload text into bytes.
 - `output_path_for(input_path, appn, out_path) -> str`: Default output filename builder.
+- `mutation_output_path_for(input_path, output_dir, appn, out_path) -> str`: Mutation-plugin default output filename builder.
 
 ## File: `jpg_fault_tools.py`
-**Purpose:** CLI helper for tools (custom APPn insertion).
+**Purpose:** Compatibility CLI helper for custom APPn insertion.
 
 Commands:
 - `insert-appn`: Insert a custom APPn segment with payload hex/file and optional identifier.
@@ -510,7 +520,9 @@ Commands:
 - The old dedicated TUI Outputs-panel control for DC heatmap has been removed; the TUI path for DC heatmap is now the plugin tab.
 - The old dedicated TUI Outputs-panel control for AC energy heatmap has been removed; the TUI path for AC energy heatmap is now the plugin tab.
 - The SOFn pane now mirrors APPn/DQT/DHT by using one subtab per SOF section.
-- Structured SOF0, DQT, and DHT editors can highlight the corresponding serialized bytes in their left hex views based on the current value selection.
+- The SOS pane now mirrors the other editable segment workspaces with header/components/flow/links/edit views and structured/raw editing.
+- Structured SOF0, SOS, DQT, and DHT editors can highlight the corresponding serialized bytes in their left hex views based on the current value selection.
+- SOF and SOS now use pane-scoped widget lookup plus debug-file instrumentation to diagnose reload-time mount races.
 
 ## Remaining Work
 
@@ -569,31 +581,33 @@ Functions:
 **Purpose:** Textual fullscreen TUI for interactive control.
 
 Features:
-- Left menu for Input/Info/Tools/Mutation/Outputs/Plugins.
+- Left menu for Input/Info/Mutation/Outputs/Plugins.
 - File browser with JPEG-only list and live preview (ASCII thumbnail + metadata).
-- Info tab with segment list, details, entropy, full-hex view, and APP0/SOFn/DRI/APPn/DHT/DQT decoding.
-- Tools tab with APPn insertion helper.
+- Info tab with segment list, details, entropy ranges inside `Segments`, full-hex view, and APP0/SOFn/SOS/DRI/APPn/DHT/DQT/Trace decoding.
 
 Notable behavior:
 - Info → Segments includes health checks with OK/WARN/FAIL and reasons.
 - APP0 editor supports simple fields and advanced raw hex, with live preview.
-- SOF0, DRI, DHT, and DQT editors all provide live byte-level preview updates.
+- SOF0, SOS, DRI, DHT, and DQT editors all provide live byte-level preview updates.
 - DHT and DQT avoid rewriting the active editor while typing; raw/structured views sync when mode changes.
 - APP1 and APP2 save through the same shared segment-rewrite helper used by the other editable segment workspaces.
+- APPn insertion now runs through the `insert_appn` mutation plugin under the plugin-hosted `Tools` panel; the standalone APPn Writer TUI pane was removed.
+- The generic `Plugins` panel is now a read-only clickable analysis inventory rather than a checkbox-based run selector.
 - DHT preview recovery now hangs off the generic keyed-preview helper instead of a bespoke refresh path.
 - Selecting a JPEG auto-loads Info tabs for immediate inspection.
 
 ### Info Tab Details
 - **General**: file size, segment count, scan count, total entropy bytes.
-- **Segments**: one-line segment summary plus health status and a muted list of standard JPEG sections not present in the file.
+- **Segments**: one-line segment summary plus health status, entropy-coded scan ranges, and a muted list of standard JPEG sections not present in the file.
 - **Details**: expanded per-segment explanations (from `report.explain_segment`).
-- **Entropy**: entropy ranges per scan.
 - **APP0**: decoded fields, legend, and colorized hex dump.
 - **SOFn**: one workspace per SOF marker; SOF0 keeps edit support, other SOF markers are shown in read-only frame/components/tables views.
+- **SOS**: one workspace per SOS marker; header/components/flow/links/edit views, structured/raw editing, and scan linkage.
 - **DRI**: restart-interval workspace with bytes/info plus summary/effect/edit views.
 - **APPn**: per-segment subtabs for APP1/APP2 decoding (others are read-only).
 - **DHT**: per-segment workspaces with bytes/info plus table/counts/symbols/usage/codes/edit views.
 - **DQT**: per-segment workspaces with bytes/info plus grid/zigzag/stats/usage/heatmap/edit views.
+- **Trace**: one workspace per scan with manual trace loading, a paged MCU/block list, and selected-block detail views.
 - **Hex**: full-file hex view with segment coloring and clickable legend.
 
 ### Segment Health Checks
@@ -661,10 +675,11 @@ Behavior:
 - Segment coloring matches legend entries.
 - Legend entries are clickable to jump to the segment’s page.
 
-### Tools Tab (APPn Writer)
-- Insert a custom APPn marker with payload hex or payload file.
+### `insert_appn` Mutation Plugin
+- Insert one custom APPn marker with payload hex or payload file.
 - Optional ASCII identifier prefix.
-- Default output path: `<stem>_appNN.jpg`.
+- Default plugin output path: `<output_dir>/<stem>_appNN.jpg`.
+- The compatibility CLI still defaults to `<stem>_appNN.jpg` next to the input file.
 
 ## Tests: `tests/` (All Python Files)
 These are Python functions too, and they define behavior expectations for the system.

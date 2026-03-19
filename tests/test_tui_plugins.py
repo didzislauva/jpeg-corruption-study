@@ -126,7 +126,6 @@ def test_menu_selected_shows_plugin_panel() -> None:
     widgets = {
         "#panel-input": FakePanelWidget(),
         "#panel-info": FakePanelWidget(),
-        "#panel-tools": FakePanelWidget(),
         "#panel-mutation": FakePanelWidget(),
         "#panel-outputs": FakePanelWidget(),
         "#panel-plugins": FakePanelWidget(),
@@ -223,6 +222,7 @@ def test_load_plugins_registers_builtin_mutation_tui_plugins() -> None:
 
     assert "55" in ids
     assert "aa" in ids
+    assert "insert_appn" in ids
 
 
 def test_run_plugin_supports_mutation_plugins(tmp_path: Path) -> None:
