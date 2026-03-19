@@ -2,6 +2,7 @@ import pytest
 
 from jpeg_fault.core.models import Segment
 from jpeg_fault.core.tui import JpegFaultTui
+from tests.tui_test_helpers import FakeInput, install_query
 
 
 def _build_icc_profile() -> bytes:
@@ -79,3 +80,115 @@ def test_app2_tabs_created():
     app._init_app2_tabs("app2-00000000")
     assert left.panes == ["Raw", "Hex", "Table"]
     assert right.panes == ["Header", "Tags", "Tag Table", "Edit"]
+
+
+def test_app2_input_changed_refreshes_for_xyz_and_trc_fields() -> None:
+    app = JpegFaultTui()
+    calls: list[str] = []
+    app._refresh_app2_preview = lambda key: calls.append(key)  # type: ignore[assignment]
+
+    class DummyInput:
+        id = "app2-00000000-gxyz-input"
+
+    class DummyEvent:
+        input = DummyInput()
+
+    app._on_app2_input_changed(DummyEvent())
+
+    assert calls == ["app2-00000000"]
+
+
+def test_app2_collect_updates_builds_text_xyz_and_gamma_updates() -> None:
+    app = JpegFaultTui()
+    key = "app2-00000000"
+    widgets = {
+        f"#{key}-desc-input": FakeInput("Display P3"),
+        f"#{key}-cprt-input": FakeInput("Copyright"),
+        f"#{key}-dmnd-input": FakeInput("OpenAI"),
+        f"#{key}-dmdd-input": FakeInput("Model X"),
+        f"#{key}-wtpt-input": FakeInput("0.9642,1.0,0.8249"),
+        f"#{key}-bkpt-input": FakeInput("0.0,0.0,0.0"),
+        f"#{key}-rxyz-input": FakeInput("0.4361,0.2225,0.0139"),
+        f"#{key}-gxyz-input": FakeInput("0.3851,0.7169,0.0971"),
+        f"#{key}-bxyz-input": FakeInput("0.1431,0.0606,0.7141"),
+        f"#{key}-rtrc-input": FakeInput("2.2"),
+        f"#{key}-gtrc-input": FakeInput("2.2"),
+        f"#{key}-btrc-input": FakeInput("2.2"),
+    }
+    install_query(app, widgets)
+    app.app2_tag_types[key] = {"desc": "desc", "cprt": "text"}
+
+    updates = app._app2_collect_updates(key)
+
+    assert set(updates) == {
+        "desc",
+        "cprt",
+        "dmnd",
+        "dmdd",
+        "wtpt",
+        "bkpt",
+        "rXYZ",
+        "gXYZ",
+        "bXYZ",
+        "rTRC",
+        "gTRC",
+        "bTRC",
+    }
+
+
+def test_set_input_path_value_loads_once_when_programmatic_selection(tmp_path) -> None:
+    app = JpegFaultTui()
+    input_path = tmp_path / "sample.jpg"
+    input_path.write_bytes(b"\xff\xd8\xff\xd9")
+    widgets = {"#input-path": FakeInput("")}
+    install_query(app, widgets)
+    calls: list[str] = []
+    app._load_selected_input_path = lambda path: calls.append(path)  # type: ignore[assignment]
+
+    app._set_input_path_value(str(input_path))
+
+    assert widgets["#input-path"].value == str(input_path)
+    assert calls == [str(input_path)]
+
+
+def test_input_path_changed_is_ignored_while_programmatic_update_is_suppressed() -> None:
+    app = JpegFaultTui()
+    calls: list[str] = []
+    app._load_selected_input_path = lambda path: calls.append(path)  # type: ignore[assignment]
+    app._suppress_input_path_changed = True
+
+    class DummyInput:
+        value = "/tmp/example.jpg"
+
+    class DummyEvent:
+        input = DummyInput()
+
+    app._on_input_path_changed(DummyEvent())
+
+    assert calls == []
+
+
+def test_app1_ifd_textarea_change_ignores_missing_widgets() -> None:
+    app = JpegFaultTui()
+    calls: list[tuple[str, bool]] = []
+    app._set_app1_dirty = lambda key, dirty: calls.append((key, dirty))  # type: ignore[assignment]
+    install_query(app, {})
+
+    class DummyTextArea:
+        id = "app1-00000014-ifd0-editor"
+
+    class DummyEvent:
+        text_area = DummyTextArea()
+
+    app._on_app1_textarea_changed(DummyEvent())
+
+    assert calls == []
+
+
+def test_set_app1_dirty_ignores_missing_save_button() -> None:
+    app = JpegFaultTui()
+    install_query(app, {})
+
+    app._set_app1_dirty("app1-00000014", True)
+
+    assert app.app1_dirty["app1-00000014"] is True

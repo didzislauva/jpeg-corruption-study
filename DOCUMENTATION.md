@@ -7,7 +7,7 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Added two mutation modes: `ff` and `00` (direct replacement).
 - Added `--overflow-wrap` to wrap `add1`/`sub1` at byte boundaries.
 - Refactored the CLI to call a new core API layer (`jpeg_fault/core/api.py`).
-- Split the large TUI into `tui_app.py`, `tui_segments_basic.py`, `tui_segments_tables.py`, `tui_segments_appn.py`, and `tui_hex.py`.
+- Split the TUI into a dedicated `jpeg_fault/core/tui/` package with `app.py`, `segments_basic.py`, `segments_tables.py`, `segments_appn.py`, and `hex.py`.
 - Added plugin registries for core analysis plugins and TUI plugin panels.
 - Added a separate mutation-plugin family and registry.
 - Strengthened plugin isolation with typed plugin params, declared plugin needs, and richer host-prepared plugin contexts.
@@ -17,16 +17,24 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Added value-to-byte highlighting in structured SOF0, DQT, and DHT editors.
 - Reworked the SOF pane into per-section SOFn subtabs, keeping SOF0 editable and other SOF markers read-only.
 - Added an unused-sections list to the Info → Segments view.
+- Moved plugin context building into a shared `jpeg_fault/core/plugin_contexts.py` helper used by both the API layer and the TUI.
+- Deduplicated analysis and mutation plugin discovery behind a shared `jpeg_fault/core/plugin_loader.py` helper.
+- Tightened several TUI hot-path widget lookup failures to catch query-specific errors instead of swallowing all exceptions.
+- Refactored APP2 editor plumbing in `jpeg_fault/core/tui/segments_appn.py` to centralize ICC field collection, ICC update generation, and preview field population.
+- Fixed APP2 input-change preview refresh so all ICC edit fields trigger preview updates consistently.
+- Added dedicated `jpeg_fault/core/constants/` modules for JPEG/EXIF/ICC protocol mappings so repeated constants live in one place instead of being scattered across parser and TUI code.
+- Removed unused debug instrumentation helpers and kept `debug.py` focused on lightweight debug logging.
 - Updated tests and docs.
-- Current focused TUI/plugin test slices pass.
+- The full test suite currently passes (`129 passed` in the latest run).
 
 ## Dependency Model
 - Python 3.8+ is the baseline runtime.
 - The base parser/report/mutation flow is standard-library only.
-- This repository currently has no pinned dependency manifest file such as `requirements.txt` or `pyproject.toml`; optional imports are resolved at runtime by feature.
+- This repository ships a `requirements.txt` covering the full optional dependency set used for TUI, charts, GIF output, EXIF editing, and tests.
+- Optional imports are still resolved at runtime by feature, so the base parser/report/mutation flow remains standard-library only.
 
 Optional third-party dependencies inferred from the code:
-- `pillow`: required for GIF output in `media.py`, metric charts in `ssim_analysis.py`, and DCT heatmaps in `dct_analysis.py`.
+- `pillow`: required for GIF output in `media.py`, metric charts in `ssim_analysis.py`, and DCT heatmaps in `plugins/_shared/dct_heatmap.py`.
 - `matplotlib`: required for metric charts, wave charts, and DCT heatmaps. These code paths force the `Agg` backend.
 - `numpy`: required for metric charts, wave charts, and DCT heatmaps.
 - `scikit-image`: required only when SSIM is requested (`--ssim-chart` or `--metrics-chart-prefix` with `ssim`).
@@ -51,6 +59,11 @@ The plugin system is now split into two families:
 
 - analysis plugins: produce derived outputs such as charts, reports, and inspections
 - mutation plugins: produce additional mutated files as part of the run pipeline
+
+Core mutations remain separate from mutation plugins:
+
+- core mutations are the built-in `--mutate` modes in `jpeg_fault/core/mutate.py`
+- mutation plugins are optional file-generating extensions discovered from the shared `jpeg_fault/core/plugins/` root
 
 Analysis plugin contract:
 
@@ -91,7 +104,7 @@ Current host-prepared context model:
 - the API can provide format, input path, output directory, debug flag, typed params, and selected optional artifacts
 - this is the current isolation boundary that future built-in plugins should target
 
-Current built-in plugin example:
+Current built-in plugin examples:
 
 - `jpeg_fault/core/plugins/entropy_wave/plugin.py`
   - declares typed params for `out_path`, `mode`, `transform`, and optional `csv_path`
@@ -106,12 +119,21 @@ Current built-in plugin example:
   - can optionally export the selected stat series to CSV
 - `jpeg_fault/core/plugins/dc_heatmap/plugin.py`
   - declares typed params for `out_path`, `cmap`, `plane_mode`, and `block_size`
-  - currently keeps the existing decoded-image heatmap implementation in `dct_analysis.py` as the reusable library layer
+  - currently keeps the shared decoded-image heatmap implementation in `plugins/_shared/dct_heatmap.py`
   - defaults unnamed outputs to a descriptive filename in the current working directory using the selected plane mode and block size
-  - returns block-grid dimensions via plugin result details for compatibility with the legacy CLI summary
+- `jpeg_fault/core/plugins/mutation_55/plugin.py`
+  - writes independent mutation outputs that replace sampled entropy bytes with `0x55`
+  - currently requests `source_bytes` and `entropy_ranges`
+  - supports typed `sample` and `seed` params
+  - also registers a TUI plugin tab under the `Plugin Mutations` panel
+- `jpeg_fault/core/plugins/mutation_aa/plugin.py`
+  - writes independent mutation outputs that replace sampled entropy bytes with `0xAA`
+  - currently requests `source_bytes` and `entropy_ranges`
+  - supports typed `sample` and `seed` params
+  - also registers a TUI plugin tab under the `Plugin Mutations` panel
 - `jpeg_fault/core/plugins/ac_energy_heatmap/plugin.py`
   - declares typed params for `out_path`, `cmap`, `plane_mode`, and `block_size`
-  - currently keeps the existing decoded-image heatmap implementation in `dct_analysis.py` as the reusable library layer
+  - currently keeps the shared decoded-image heatmap implementation in `plugins/_shared/dct_heatmap.py`
   - defaults unnamed outputs to a descriptive filename in the current working directory using the selected plane mode and block size
   - returns block-grid dimensions via plugin result details for compatibility with the legacy CLI summary
 
@@ -129,26 +151,47 @@ Current plugin registries:
 - `jpeg_fault/core/mutation_registry.py`
 - `jpeg_fault/core/tui_plugin_registry.py`
 
+Plugin placement rule for future work:
+
+- all built-in plugin families live under `jpeg_fault/core/plugins/<plugin_name>/plugin.py`
+- plugin kind is defined by what the plugin registers with, not by a separate top-level directory outside `plugins`
+- if another plugin family is added later (for example tool plugins), keep it inside `jpeg_fault/core/plugins/` as well
+- keep shared reusable logic outside the plugin package only when it is genuinely core library code that multiple plugin implementations or non-plugin paths use
+
+Current wrap-up and next cleanup targets:
+
+- the TUI packaging move is done; `jpeg_fault/core/tui/` is now the only implementation path
+- tests and imports now target `jpeg_fault.core.tui.*` directly
+- plugin implementations are now consistently folder-per-plugin under `jpeg_fault/core/plugins/`
+- shared mutation-plugin support code now lives in `jpeg_fault/core/mutation_plugin_helpers.py`
+- stale old scaffolding from the earlier `jpeg_fault/core/mutation_plugins/` layout has been removed
+- the current highest-value TUI cleanup target is `jpeg_fault/core/tui/segments_appn.py` on the APP1/EXIF side, followed by remaining DHT consistency work
+
 ## End-To-End Wiring (How It All Connects)
 - `jpg_fault_tolerance.py` is the executable entrypoint and calls `jpeg_fault.core.cli.main()`.
 - `jpeg_fault/core/cli.py` parses CLI args and converts them to `RunOptions` (from the API layer).
 - `jpeg_fault/core/api.py` orchestrates the full run: parse JPEG, print report, run built-in mutations, run mutation plugins, post-process outputs, run source-only analyses, and run analysis plugins.
 - Built-in wave phases now route through analysis-plugin execution instead of calling wave-analysis helpers directly.
 - `jpeg_fault/core/jpeg_parse.py` parses JPEG structure and finds entropy ranges.
+- `jpeg_fault/core/constants/jpeg.py` centralizes JPEG marker/signature/zigzag metadata.
+- `jpeg_fault/core/constants/exif.py` centralizes EXIF/TIFF signatures, pointer tags, and type metadata.
+- `jpeg_fault/core/constants/icc.py` centralizes ICC signatures and APP2 editor field/tag mappings.
 - `jpeg_fault/core/report.py` renders the human-readable, colorized JPEG report.
 - `jpeg_fault/core/mutate.py` owns all mutation logic, sampling, and file output.
 - `jpeg_fault/core/media.py` builds GIFs from mutation outputs.
 - `jpeg_fault/core/ssim_analysis.py` computes metrics and writes charts.
 - `jpeg_fault/core/wave_analysis.py` writes entropy stream wave charts.
-- `jpeg_fault/core/dct_analysis.py` writes DC/AC energy heatmaps.
+- `jpeg_fault/core/plugins/_shared/dct_heatmap.py` writes DC/AC energy heatmaps.
 - `jpeg_fault/core/analysis_types.py` defines analysis plugin param specs, needs, contexts, and results.
+- `jpeg_fault/core/plugin_contexts.py` builds analysis and mutation plugin contexts for shared host use.
+- `jpeg_fault/core/plugin_loader.py` centralizes package scanning/import behavior for plugin registries.
 - `jpeg_fault/core/mutation_types.py` defines mutation plugin contexts and results.
-- `jpeg_fault/core/debug.py` provides lightweight debug logging and optional function instrumentation.
-- `jpeg_fault/core/tui_app.py` owns the main Textual app shell and orchestration for the TUI.
-- `jpeg_fault/core/tui_segments_basic.py` owns APP0/SOFn/DRI TUI workspaces.
-- `jpeg_fault/core/tui_segments_tables.py` owns DHT/DQT TUI workspaces.
-- `jpeg_fault/core/tui_segments_appn.py` owns APP1/APP2 and generic APPn TUI workspaces.
-- `jpeg_fault/core/tui_hex.py` owns the full-file hex pane.
+- `jpeg_fault/core/debug.py` provides lightweight debug logging.
+- `jpeg_fault/core/tui/app.py` owns the main Textual app shell and orchestration for the TUI.
+- `jpeg_fault/core/tui/segments_basic.py` owns APP0/SOFn/DRI TUI workspaces.
+- `jpeg_fault/core/tui/segments_tables.py` owns DHT/DQT TUI workspaces.
+- `jpeg_fault/core/tui/segments_appn.py` owns APP1/APP2 and generic APPn TUI workspaces.
+- `jpeg_fault/core/tui/hex.py` owns the full-file hex pane.
 - `jpeg_fault/core/analysis_registry.py`, `jpeg_fault/core/mutation_registry.py`, and `jpeg_fault/core/tui_plugin_registry.py` support pluggable analysis, mutation, and TUI plugin surfaces.
 
 ## File: `jpg_fault_tolerance.py`
@@ -205,6 +248,36 @@ Functions:
 
 Tie-in:
 - Used by `api.run()` to parse input JPEG and by `report.py` to decode descriptive details.
+
+## File: `jpeg_fault/core/constants/jpeg.py`
+**Purpose:** Shared JPEG protocol constants.
+
+Objects:
+- `MARKER_NAMES`: Friendly names for standard JPEG markers.
+- `NO_LENGTH_MARKERS`: Marker bytes that do not carry a 16-bit length field.
+- `JPEG_ZIGZAG_ORDER`: Fixed 8x8 zigzag coefficient order.
+- `JFIF_SIGNATURE` / `JFXX_SIGNATURE`: APP0 signature prefixes.
+
+## File: `jpeg_fault/core/constants/exif.py`
+**Purpose:** Shared EXIF/TIFF protocol constants.
+
+Objects:
+- `EXIF_SIGNATURE`: Standard APP1 EXIF prefix.
+- `TIFF_MAGIC`: TIFF header magic value.
+- `EXIF_POINTER_TAGS`: Tag ids used to follow nested EXIF/GPS/Interop IFDs.
+- `EXIF_TYPE_SIZES`: EXIF value-type widths.
+- `EXIF_TYPE_NAMES`: EXIF value-type names.
+- `EXIF_REQUIRED_IFD_KEYS`: Required top-level keys for editable EXIF dicts.
+
+## File: `jpeg_fault/core/constants/icc.py`
+**Purpose:** Shared ICC/APP2 protocol constants and editor field mappings.
+
+Objects:
+- `ICC_PROFILE_SIGNATURE`: Standard APP2 ICC prefix.
+- `ICC_TEXT_TAG_FIELDS`: Editable text-field to ICC-tag mapping.
+- `ICC_XYZ_TAG_FIELDS`: Editable XYZ-field to ICC-tag mapping.
+- `ICC_GAMMA_TAG_FIELDS`: Editable gamma-field to ICC-tag mapping.
+- `ICC_EDITABLE_FIELDS`: Ordered APP2 field list used by the editor.
 
 ## File: `jpeg_fault/core/report.py`
 **Purpose:** Human-readable, colorized JPEG structure report.
@@ -340,7 +413,7 @@ Functions:
 Tie-in:
 - Called by `api.run_wave_phase()` and `api.run_sliding_wave_phase()`.
 
-## File: `jpeg_fault/core/dct_analysis.py`
+## File: `jpeg_fault/core/plugins/_shared/dct_heatmap.py`
 **Purpose:** 8x8 DCT-based heatmaps computed from decoded image luminance.
 
 Functions:
@@ -357,18 +430,26 @@ Tie-in:
 - Called by `api.run_dc_heatmap_phase()` and `api.run_ac_heatmap_phase()`.
 
 ## File: `jpeg_fault/core/debug.py`
-**Purpose:** Debug logging and optional function instrumentation.
+**Purpose:** Debug logging utility.
 
 Functions:
 - `debug_log(enabled: bool, msg: str) -> None`: Print debug message to stderr.
-- `set_debug(enabled: bool) -> None`: Set global debug flag.
-- `is_debug() -> bool`: Read global debug flag.
-- `_short_value(v: Any) -> str`: Compact type-aware value summary.
-- `_summarize_call(args: tuple[Any, ...], kwargs: Dict[str, Any]) -> str`: Summarizes call arguments.
-- `instrument_module_functions(...) -> None`: Wraps functions in a module namespace with debug logging.
 
 Tie-in:
 - Used by most modules for structured debug output.
+
+## File: `jpeg_fault/core/plugin_contexts.py`
+**Purpose:** Shared host-prepared plugin-context builder layer for API and TUI use.
+
+Functions:
+- `build_analysis_context(...) -> AnalysisContext`: Builds an analysis context from declared plugin needs and host-prepared artifacts.
+- `build_mutation_context(...) -> MutationContext`: Builds a mutation context from declared plugin needs and host-prepared artifacts.
+
+## File: `jpeg_fault/core/plugin_loader.py`
+**Purpose:** Shared plugin-package discovery/import helper for registries.
+
+Functions:
+- `load_plugins_into(...) -> None`: Scans `jpeg_fault/core/plugins/`, imports matching plugin modules, and applies shared force/reload/debug behavior.
 
 ## File: `jpeg_fault/core/tools.py`
 **Purpose:** Custom APPn insertion utilities.
@@ -466,6 +547,8 @@ Notable behavior:
 - APP0 editor supports simple fields and advanced raw hex, with live preview.
 - SOF0, DRI, DHT, and DQT editors all provide live byte-level preview updates.
 - DHT and DQT avoid rewriting the active editor while typing; raw/structured views sync when mode changes.
+- APP1 and APP2 save through the same shared segment-rewrite helper used by the other editable segment workspaces.
+- DHT preview recovery now hangs off the generic keyed-preview helper instead of a bespoke refresh path.
 - Selecting a JPEG auto-loads Info tabs for immediate inspection.
 
 ### Info Tab Details
@@ -524,12 +607,14 @@ Behavior:
 - APPn tab groups APP0/APP1/APP2/APP13/APP14/etc. into subtabs.
 - APP1: EXIF-aware views with raw hex, annotated hex, table view, and edit tabs for headers/IFDs.
 - APP2: ICC profile decoder with header, tag table, and editable tag payloads.
+- APP1/APP2 saves preserve the original marker and use the shared collision-safe edited-file naming path.
 
 ### DHT Decoder (Info → DHT)
 - One workspace per DHT segment.
 - Left side shows segment structure, decoded summaries, and colorized bytes.
 - Right side provides Tables, Counts, Symbols, Usage, Codes, and Edit tabs.
 - Edit supports either structured Huffman-table dictionaries or raw payload hex.
+- Raw-hex preview still tolerates temporary odd-length input while typing, but that recovery now plugs into the shared keyed-preview flow and surfaces a warning.
 - The structured editor can highlight count/symbol/header bytes in the left hex pane when the caret is on a value.
 
 ### DQT Decoder (Info → DQT)
@@ -611,4 +696,4 @@ Tests:
 
 ### `tests/test_models_debug.py`
 Tests:
-- Verifies dataclasses and debug instrumentation helpers.
+- Verifies dataclasses and debug logging behavior.

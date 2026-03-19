@@ -86,7 +86,6 @@ class EntropyWavePlugin(AnalysisPlugin):
 plugin = EntropyWavePlugin()
 register(plugin)
 
-
 register_tui_plugin(
     TuiPluginSpec(
         id="entropy_wave",

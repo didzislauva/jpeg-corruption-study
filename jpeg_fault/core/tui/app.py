@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - optional dependency
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches, WrongType
 from textual.reactive import reactive
 from textual.widgets import (
     Button,
@@ -45,12 +46,15 @@ from textual.widget import Widget
 from textual.worker import Worker, WorkerState
 from rich.text import Text
 
-from . import api
-from .analysis_registry import all_plugins, get_plugin, load_plugins
-from .analysis_types import AnalysisContext, PluginParamSpec, validate_plugin_params
-from .format_detect import detect_format
-from .tui_plugin_registry import all_tui_plugins
-from .jpeg_parse import (
+from .. import api
+from ..analysis_registry import all_plugins, get_plugin, load_plugins
+from ..analysis_types import AnalysisContext, PluginParamSpec, validate_plugin_params
+from ..debug import debug_log
+from ..mutation_registry import all_plugins as all_mutation_plugins, get_plugin as get_mutation_plugin, load_plugins as load_mutation_plugins
+from ..plugin_contexts import build_analysis_context, build_mutation_context
+from ..format_detect import detect_format
+from ..tui_plugin_registry import all_tui_plugins
+from ..jpeg_parse import (
     MARKER_NAMES,
     build_dri_payload,
     build_dht_payload,
@@ -69,14 +73,17 @@ from .jpeg_parse import (
     dqt_values_to_natural_grid,
     parse_jpeg,
 )
-from .mutate import total_entropy_length
-from .report import explain_segment
-from .tools import insert_custom_appn, output_path_for, read_payload_hex
+from ..mutate import total_entropy_length
+from ..report import explain_segment
+from ..tools import insert_custom_appn, output_path_for, read_payload_hex
 
-from .tui_segments_basic import TuiSegmentsBasicMixin
-from .tui_segments_tables import TuiSegmentsTablesMixin
-from .tui_segments_appn import TuiSegmentsAppnMixin
-from .tui_hex import TuiHexMixin
+from .segments_basic import TuiSegmentsBasicMixin
+from .segments_tables import TuiSegmentsTablesMixin
+from .segments_appn import TuiSegmentsAppnMixin
+from .hex import TuiHexMixin
+
+
+QUERY_ERRORS = (NoMatches, WrongType, AssertionError)
 
 
 
@@ -217,6 +224,9 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     plugins_render_counter = reactive(0)
     plugin_panels: dict[str, VerticalScroll] = {}
     plugin_panel_tabs: dict[str, TabbedContent] = {}
+    _suppress_input_path_changed = False
+    _pending_input_load_token = 0
+    _info_rebuild_serial = 0
 
     def __init__(self, defaults: Optional[TuiDefaults] = None) -> None:
         super().__init__()
@@ -229,7 +239,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
                 yield ListItem(Label("Input & Output"), id="menu-input")
                 yield ListItem(Label("Info"), id="menu-info")
                 yield ListItem(Label("Tools"), id="menu-tools")
-                yield ListItem(Label("Mutation"), id="menu-mutation")
+                yield ListItem(Label("Core Mutations"), id="menu-mutation")
                 yield ListItem(Label("Outputs"), id="menu-outputs")
                 yield ListItem(Label("Plugins"), id="menu-plugins")
             with Container(id="panel"):
@@ -264,7 +274,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             self._update_input_preview(self.preview_path)
         try:
             panel = self.query_one("#panel-input", VerticalScroll)
-        except Exception:
+        except QUERY_ERRORS:
             return
         panel.refresh(layout=True)
 
@@ -306,7 +316,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         panel = VerticalScroll(
             Horizontal(
                 Vertical(
-                    Label("Mutation", classes="field"),
+                    Label("Core Mutations", classes="field"),
                     Label("Mutation mode", classes="field"),
                     Select(
                         self._mutation_mode_options(),
@@ -375,7 +385,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             mode = self.query_one("#mutate-mode", Select).value
             label = self.query_one("#mutate-bitflip-label", Static)
             bits = self.query_one("#mutate-bitflip-bits", Input)
-        except Exception:
+        except QUERY_ERRORS:
             return
         show = mode == "bitflip"
         label.display = show
@@ -384,7 +394,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     def _refresh_mutation_help(self) -> None:
         try:
             help_widget = self.query_one("#mutation-help", Static)
-        except Exception:
+        except QUERY_ERRORS:
             return
         help_widget.update(self._mutation_help_text())
 
@@ -513,36 +523,38 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     def _input_value(self, selector: str, default: str = "") -> str:
         try:
             return self.query_one(selector, Input).value.strip()
-        except Exception:
+        except QUERY_ERRORS:
             return default
 
     def _select_value(self, selector: str, default: str = "") -> str:
         try:
             value = self.query_one(selector, Select).value
-        except Exception:
+        except QUERY_ERRORS:
             return default
         return default if value is None else str(value).strip()
 
     def _checkbox_value(self, selector: str) -> bool:
         try:
             return bool(self.query_one(selector, Checkbox).value)
-        except Exception:
+        except QUERY_ERRORS:
             return False
 
     def _safe_selected_plugins_csv(self) -> str:
         try:
             return self._selected_plugins_csv()
-        except Exception:
+        except QUERY_ERRORS:
             return ""
 
     @on(Select.Changed, "#mutate-mode")
     def _on_mutation_mode_changed(self, _event: Select.Changed) -> None:
         self._apply_mutation_mode_visibility()
         self._refresh_mutation_help()
+        self._refresh_mutation_plugin_help()
 
     @on(Select.Changed, "#mutation-apply")
     def _on_mutation_strategy_changed(self, _event: Select.Changed) -> None:
         self._refresh_mutation_help()
+        self._refresh_mutation_plugin_help()
 
     @on(Input.Changed)
     def _on_mutation_help_input_changed(self, event: Input.Changed) -> None:
@@ -557,10 +569,18 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             "metrics-prefix",
         }:
             self._refresh_mutation_help()
+            self._refresh_mutation_plugin_help()
+            return
+        input_id = event.input.id or ""
+        if input_id.startswith("plugin-"):
+            plugin_id = self._plugin_id_from_widget_id(input_id)
+            if plugin_id:
+                self._update_mutation_plugin_help(plugin_id)
 
     @on(Checkbox.Changed)
     def _on_mutation_help_checkbox_changed(self, _event: Checkbox.Changed) -> None:
         self._refresh_mutation_help()
+        self._refresh_mutation_plugin_help()
 
     def _build_tools_panel(self) -> VerticalScroll:
         panel = VerticalScroll(
@@ -619,9 +639,10 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         try:
             menu = self.query_one("#menu", ListView)
             panel = self.query_one("#panel", Container)
-        except Exception:
+        except QUERY_ERRORS:
             return
         load_plugins(debug=False)
+        load_mutation_plugins(debug=False)
         specs = sorted(list(all_tui_plugins()), key=lambda p: (p.panel_label, p.tab_label, p.id))
         if not specs:
             return
@@ -670,10 +691,11 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     def _plugin_tab_content(self, spec) -> object:
         if spec.build_tab is not None:
             return spec.build_tab(self)
-        plugin_id = spec.analysis_plugin_id or spec.id
-        plugin = get_plugin(plugin_id)
+        plugin_id, plugin, family = self._resolve_tui_plugin(spec)
         if plugin is None:
             return VerticalScroll(Static(f"Plugin not found: {plugin_id}", classes="field"))
+        if family == "mutation":
+            return self._build_mutation_plugin_tab(plugin)
         return self._build_default_plugin_tab(plugin)
 
     def _build_default_plugin_tab(self, plugin) -> object:
@@ -689,6 +711,28 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             ]
         )
         return VerticalScroll(*children)
+
+    def _build_mutation_plugin_tab(self, plugin) -> object:
+        left_children: list[object] = [Static("Mutation plugin parameters", classes="field")]
+        for param_spec in getattr(plugin, "params_spec", ()):
+            left_children.extend(self._build_plugin_param_widgets(plugin.id, param_spec))
+        if len(left_children) == 1:
+            left_children.append(Static("This mutation plugin has no configurable parameters.", classes="field"))
+        left_children.extend(
+            [
+                Button(f"Run {plugin.label}", id=f"plugin-run-{plugin.id}", variant="success", classes="plugin-run"),
+                Static("", id=f"plugin-{plugin.id}-status"),
+            ]
+        )
+        right_children = [
+            Static("What will happen", classes="field"),
+            Static("", id=f"plugin-{plugin.id}-help", classes="field"),
+        ]
+        return Horizontal(
+            VerticalScroll(*left_children),
+            VerticalScroll(*right_children),
+            classes="row",
+        )
 
     def _build_plugin_param_widgets(self, plugin_id: str, spec: PluginParamSpec) -> list[object]:
         input_id = f"plugin-{plugin_id}-{spec.name.replace('_', '-')}"
@@ -709,6 +753,61 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             widgets.append(Static(spec.help, classes="field"))
         return widgets
 
+    def _refresh_mutation_plugin_help(self) -> None:
+        load_mutation_plugins(debug=False)
+        for plugin in all_mutation_plugins():
+            self._update_mutation_plugin_help(plugin.id, plugin)
+
+    def _update_mutation_plugin_help(self, plugin_id: str, plugin=None) -> None:
+        if plugin is None:
+            load_mutation_plugins(debug=False)
+            plugin = get_mutation_plugin(plugin_id)
+        if plugin is None:
+            return
+        try:
+            help_widget = self.query_one(f"#plugin-{plugin_id}-help", Static)
+        except QUERY_ERRORS:
+            return
+        help_widget.update(self._mutation_plugin_help_text(plugin))
+
+    def _mutation_plugin_help_text(self, plugin) -> str:
+        strategy = self._select_value("#mutation-apply", default="independent")
+        repeats = self._input_value("#repeats", default="1") or "1"
+        step = self._input_value("#step", default="1") or "1"
+        sample = self._plugin_param_value_by_name(plugin.id, "sample")
+        seed = self._plugin_param_value_by_name(plugin.id, "seed")
+        lines = [f"{plugin.label} writes mutated JPEG outputs through the mutation-plugin pipeline."]
+        if sample:
+            lines.append(f"Sample size: {sample}.")
+        if seed:
+            lines.append(f"Seed: {seed}.")
+        lines.append(self._describe_mutation_strategy(strategy, repeats, step))
+        if strategy == "independent":
+            lines.append("Each output starts from the original JPEG and applies this plugin's mutation rule to one sampled step/set.")
+        elif strategy == "cumulative":
+            lines.append("Later outputs keep earlier plugin-applied mutations and add the next sampled group.")
+        else:
+            lines.append("Later outputs keep earlier plugin-applied mutations and advance through contiguous mutable bytes.")
+        lines.append(f"Outputs are written under {self._input_value('#output-dir', default='mutations') or 'mutations'}.")
+        return "\n\n".join(lines)
+
+    def _plugin_param_value_by_name(self, plugin_id: str, name: str) -> str:
+        selector = f"#plugin-{plugin_id}-{name.replace('_', '-')}"
+        return self._input_value(selector)
+
+    def _plugin_id_from_widget_id(self, widget_id: str) -> str | None:
+        if not widget_id.startswith("plugin-"):
+            return None
+        suffixes = ("-status", "-help")
+        for suffix in suffixes:
+            if widget_id.endswith(suffix):
+                return widget_id[len("plugin-"):-len(suffix)]
+        for plugin in all_mutation_plugins():
+            prefix = f"plugin-{plugin.id}-"
+            if widget_id.startswith(prefix):
+                return plugin.id
+        return None
+
     def _append_list_view_item(self, list_view: object, item: ListItem) -> None:
         append = getattr(list_view, "append", None)
         if callable(append):
@@ -728,11 +827,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         suffix = event.path.suffix.lower()
         if suffix not in {".jpg", ".jpeg"}:
             return
-        input_widget = self.query_one("#input-path", Input)
-        input_widget.value = str(event.path)
-        self._update_input_preview(str(event.path))
-        self._auto_load_info()
-        self._refresh_plugins_list()
+        self._set_input_path_value(str(event.path))
 
     @on(DirectoryTree.DirectorySelected)
     def _on_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
@@ -752,24 +847,49 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         filename = getattr(item, "filename", None)
         if not filename:
             return
-        input_widget = self.query_one("#input-path", Input)
         path = str(Path(self.current_dir) / filename)
-        input_widget.value = path
-        self._update_input_preview(path)
-        self._auto_load_info()
-        self._refresh_plugins_list()
+        self._set_input_path_value(path)
         self._mark_app0_dirty(False)
 
     @on(Input.Changed, "#input-path")
     def _on_input_path_changed(self, event: Input.Changed) -> None:
+        if self._suppress_input_path_changed:
+            return
         path = event.input.value.strip()
+        self._load_selected_input_path(path)
+
+    def _set_input_path_value(self, path: str) -> None:
+        input_widget = self.query_one("#input-path", Input)
+        if input_widget.value == path:
+            self._load_selected_input_path(path)
+            return
+        self._suppress_input_path_changed = True
+        try:
+            input_widget.value = path
+        finally:
+            self._suppress_input_path_changed = False
+        self._load_selected_input_path(path)
+
+    def _load_selected_input_path(self, path: str) -> None:
+        path = path.strip()
         if not path or path == self.preview_path:
             return
-        if not Path(path).exists():
+        input_file = Path(path)
+        if not input_file.exists():
             return
-        if Path(path).suffix.lower() not in {".jpg", ".jpeg"}:
+        if input_file.suffix.lower() not in {".jpg", ".jpeg"}:
             return
         self._update_input_preview(path)
+        self._pending_input_load_token += 1
+        token = self._pending_input_load_token
+        self.call_after_refresh(self._finish_selected_input_load, path, token)
+
+    def _finish_selected_input_load(self, path: str, token: int) -> None:
+        if token != self._pending_input_load_token:
+            return
+        current_path = self._input_value("#input-path")
+        if current_path.strip() != path.strip():
+            return
         self._auto_load_info()
         self._refresh_plugins_list()
 
@@ -1020,7 +1140,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             list_container = self.query_one("#plugins-list", Vertical)
             fmt_label = self.query_one("#plugins-format", Static)
             input_path = self.query_one("#input-path", Input).value.strip()
-        except Exception:
+        except QUERY_ERRORS:
             return
         for child in list(list_container.children):
             child.remove()
@@ -1059,7 +1179,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
                 if not cb_id:
                     continue
                 cb = self.query_one(f"#{cb_id}", Checkbox)
-            except Exception:
+            except QUERY_ERRORS:
                 continue
             if cb.value:
                 selected.append(plugin_id)
@@ -1084,7 +1204,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             self.query_one(f"#{adv_title_id}", Static).display = adv
             manual = self.query_one(f"#{manual_length_id}", Checkbox).value
             self.query_one(f"#{length_id}", Input).disabled = not manual
-        except Exception:
+        except QUERY_ERRORS:
             return
 
     def _length_from_ui_hex(
@@ -1095,9 +1215,16 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         payload: bytes,
         example: str,
     ) -> int:
-        if not self.query_one(f"#{manual_length_id}", Checkbox).value:
+        try:
+            manual = self.query_one(f"#{manual_length_id}", Checkbox).value
+        except QUERY_ERRORS:
             return len(payload) + 2
-        text = self.query_one(f"#{length_id}", Input).value.strip()
+        if not manual:
+            return len(payload) + 2
+        try:
+            text = self.query_one(f"#{length_id}", Input).value.strip()
+        except QUERY_ERRORS:
+            return len(payload) + 2
         if not text:
             raise ValueError("length is required in manual mode.")
         try:
@@ -1137,12 +1264,16 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         out_path: Path,
         payload: bytes,
         length_field: int,
-        manual_length_id: str,
+        manual_length_id: Optional[str] = None,
     ) -> None:
-        log = self.query_one(f"#{log_id}", RichLog)
+        try:
+            log = self.query_one(f"#{log_id}", RichLog)
+        except QUERY_ERRORS:
+            return
         log.write(f"Saved edited file: {out_path}")
         if (
-            self.query_one(f"#{manual_length_id}", Checkbox).value
+            manual_length_id
+            and self._checkbox_value(f"#{manual_length_id}")
             and length_field != len(payload) + 2
         ):
             log.write(
@@ -1162,7 +1293,10 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     ) -> None:
         if not segment_info:
             return
-        err = self.query_one(f"#{err_id}", Static)
+        try:
+            err = self.query_one(f"#{err_id}", Static)
+        except QUERY_ERRORS:
+            return
         try:
             payload = build_payload()
             length_field = length_from_ui(payload)
@@ -1172,8 +1306,11 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         err.update("")
         set_preview(payload)
         offset, _, _, _ = segment_info
-        render_views(offset, length_field, payload)
-        mark_dirty(True)
+        try:
+            render_views(offset, length_field, payload)
+            mark_dirty(True)
+        except QUERY_ERRORS:
+            return
 
     def _sync_editor_for_mode(
         self,
@@ -1183,12 +1320,21 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         serialize_struct: Callable[[], bytes],
         deserialize_payload: Callable[[bytes], None],
     ) -> None:
-        adv = self.query_one(f"#{advanced_id}", Checkbox).value
+        try:
+            adv = self.query_one(f"#{advanced_id}", Checkbox).value
+        except QUERY_ERRORS:
+            return
         if adv:
             payload = serialize_struct()
-            self.query_one(f"#{raw_id}", TextArea).text = self._bytes_to_hex(payload)
+            try:
+                self.query_one(f"#{raw_id}", TextArea).text = self._bytes_to_hex(payload)
+            except QUERY_ERRORS:
+                return
             return
-        payload = self._parse_hex(self.query_one(f"#{raw_id}", TextArea).text)
+        try:
+            payload = self._parse_hex(self.query_one(f"#{raw_id}", TextArea).text)
+        except QUERY_ERRORS:
+            return
         deserialize_payload(payload)
 
     def _sync_keyed_editor_for_mode(
@@ -1200,12 +1346,21 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         serialize_struct: Callable[[str], bytes],
         deserialize_payload: Callable[[str, bytes], None],
     ) -> None:
-        adv = self.query_one(f"#{advanced_id}", Checkbox).value
+        try:
+            adv = self.query_one(f"#{advanced_id}", Checkbox).value
+        except QUERY_ERRORS:
+            return
         if adv:
             payload = serialize_struct(key)
-            self.query_one(f"#{raw_id}", TextArea).text = self._bytes_to_hex(payload)
+            try:
+                self.query_one(f"#{raw_id}", TextArea).text = self._bytes_to_hex(payload)
+            except QUERY_ERRORS:
+                return
             return
-        payload = self._parse_hex(self.query_one(f"#{raw_id}", TextArea).text)
+        try:
+            payload = self._parse_hex(self.query_one(f"#{raw_id}", TextArea).text)
+        except QUERY_ERRORS:
+            return
         deserialize_payload(key, payload)
 
     def _refresh_keyed_segment_preview(
@@ -1219,21 +1374,36 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         set_preview: Callable[[str, bytes], None],
         render_views: Callable[[str, bytes, int, int], None],
         set_dirty: Callable[[str, bool], None],
+        recover_payload: Optional[Callable[[str, Exception], Tuple[bytes, Optional[str]]]] = None,
     ) -> None:
         if key not in segment_info:
             return
-        err = self.query_one(f"#{err_id}", Static)
+        try:
+            err = self.query_one(f"#{err_id}", Static)
+        except QUERY_ERRORS:
+            return
+        warning = ""
         try:
             payload = build_payload(key)
             length_field = length_from_ui(key, payload)
         except Exception as e:
-            err.update(f"Error: {e}")
-            return
-        err.update("")
+            if recover_payload is None:
+                err.update(f"Error: {e}")
+                return
+            try:
+                payload, warning = recover_payload(key, e)
+                length_field = length_from_ui(key, payload)
+            except Exception:
+                err.update(f"Error: {e}")
+                return
+        err.update(warning)
         set_preview(key, payload)
         offset, _, _, _ = segment_info[key]
-        render_views(key, payload, offset, length_field)
-        set_dirty(key, True)
+        try:
+            render_views(key, payload, offset, length_field)
+            set_dirty(key, True)
+        except QUERY_ERRORS:
+            return
 
     @on(Button.Pressed, "#load-info")
     def _on_load_info(self) -> None:
@@ -1260,6 +1430,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         self.info_data = data
         self.info_segments = segments
         self.hex_page = 0
+        self._info_rebuild_serial += 1
 
         general, segments_log, details_log, entropy_log = self._info_logs()
         self._clear_info_logs(general, segments_log, details_log, entropy_log)
@@ -1271,6 +1442,20 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
         self._write_segments(segments_log, segments, entropy_ranges, data)
         self._write_details(details_log, segments, data)
         self._write_entropy(entropy_log, entropy_ranges)
+        self.call_after_refresh(
+            self._render_info_detail_tabs,
+            data,
+            segments,
+            sof_targets,
+            appn_targets,
+            dqt_targets,
+            dht_targets,
+        )
+
+    def _dynamic_pane_id(self, base: str) -> str:
+        return f"{base}-{self._info_rebuild_serial}"
+
+    def _render_info_detail_tabs(self, data: bytes, segments, sof_targets, appn_targets, dqt_targets, dht_targets) -> None:
         try:
             self._render_app0_segment(data, segments)
         except Exception:
@@ -1599,7 +1784,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
     def _plugin_status(self, plugin_id: str, message: str) -> None:
         try:
             status = self.query_one(f"#plugin-{plugin_id}-status", Static)
-        except Exception:
+        except QUERY_ERRORS:
             return
         status.update(message)
 
@@ -1608,7 +1793,7 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             input_path = self.query_one("#input-path", Input).value.strip()
             output_dir = self.query_one("#output-dir", Input).value.strip() or "mutations"
             debug = self.query_one("#debug", Checkbox).value
-        except Exception:
+        except QUERY_ERRORS:
             return
         if not input_path:
             self._plugin_status(plugin_id, "Input path is required.")
@@ -1617,7 +1802,8 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             self._plugin_status(plugin_id, f"Input path not found: {input_path}")
             return
         load_plugins(debug=debug)
-        plugin = get_plugin(plugin_id)
+        load_mutation_plugins(debug=debug)
+        plugin, family = self._resolve_plugin_by_id(plugin_id)
         if plugin is None:
             self._plugin_status(plugin_id, f"Plugin not found: {plugin_id}")
             return
@@ -1644,20 +1830,37 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             try:
                 data = Path(input_path).read_bytes()
                 segments, entropy_ranges = parse_jpeg(data) if fmt == "jpeg" else ([], [])
-                context = api._build_analysis_context(  # type: ignore[attr-defined]
-                    plugin=plugin,
-                    input_path=input_path,
-                    fmt=fmt,
-                    output_dir=output_dir,
-                    debug=debug,
-                    params=params,
-                    data=data,
-                    segments=segments,
-                    entropy_ranges=entropy_ranges,
-                    mutation_paths=[],
-                )
+                if family == "mutation":
+                    context = build_mutation_context(
+                        plugin=plugin,
+                        input_path=input_path,
+                        fmt=fmt,
+                        output_dir=output_dir,
+                        debug=debug,
+                        mutation_apply=self._select_value("#mutation-apply", default="independent"),
+                        repeats=int(self._input_value("#repeats", default="1") or "1"),
+                        step=int(self._input_value("#step", default="1") or "1"),
+                        params=params,
+                        data=data,
+                        segments=segments,
+                        entropy_ranges=entropy_ranges,
+                    )
+                else:
+                    context = build_analysis_context(
+                        plugin=plugin,
+                        input_path=input_path,
+                        fmt=fmt,
+                        output_dir=output_dir,
+                        debug=debug,
+                        params=params,
+                        data=data,
+                        segments=segments,
+                        entropy_ranges=entropy_ranges,
+                        mutation_paths=[],
+                    )
                 result = plugin.run(input_path, context)
             except Exception as exc:
+                debug_log(debug, f"TUI plugin run failed for {plugin_id}: {type(exc).__name__}: {exc}")
                 self.call_from_thread(self._plugin_status, plugin_id, f"Error: {exc}")
                 return
             count = len(result.outputs)
@@ -1685,6 +1888,21 @@ class JpegFaultTui(App, TuiSegmentsBasicMixin, TuiSegmentsTablesMixin, TuiSegmen
             except Exception:
                 continue
         return None
+
+    def _resolve_tui_plugin(self, spec) -> tuple[str, object | None, str]:
+        plugin_id = spec.analysis_plugin_id or spec.mutation_plugin_id or spec.id
+        if spec.mutation_plugin_id:
+            return plugin_id, get_mutation_plugin(plugin_id), "mutation"
+        return plugin_id, get_plugin(plugin_id), "analysis"
+
+    def _resolve_plugin_by_id(self, plugin_id: str) -> tuple[object | None, str]:
+        plugin = get_plugin(plugin_id)
+        if plugin is not None:
+            return plugin, "analysis"
+        plugin = get_mutation_plugin(plugin_id)
+        if plugin is not None:
+            return plugin, "mutation"
+        return None, "analysis"
 
     @on(Worker.StateChanged)
     def _on_worker_state_changed(self, event: Worker.StateChanged) -> None:

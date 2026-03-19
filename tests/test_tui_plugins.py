@@ -4,6 +4,11 @@ from pathlib import Path
 
 from jpeg_fault.core.analysis_registry import clear_registry_for_tests, register
 from jpeg_fault.core.analysis_types import AnalysisContext, AnalysisResult, AnalysisPlugin, PluginParamSpec
+from jpeg_fault.core.mutation_registry import (
+    clear_registry_for_tests as clear_mutation_registry_for_tests,
+    register as register_mutation,
+)
+from jpeg_fault.core.mutation_types import MutationContext, MutationPlugin, MutationResult
 from jpeg_fault.core.tui import JpegFaultTui
 from jpeg_fault.core.tui_plugin_registry import all_tui_plugins, clear_tui_plugins_for_tests, register_tui_plugin
 from jpeg_fault.core.tui_plugin_types import TuiPluginSpec
@@ -69,11 +74,12 @@ def test_init_plugin_panels_adds_menu_and_tabs(monkeypatch) -> None:
     app.query_one = fake_query  # type: ignore[assignment]
     app.call_after_refresh = lambda fn, *a, **k: fn(*a, **k)  # type: ignore[assignment]
 
-    import jpeg_fault.core.tui_app as tui_app
+    import jpeg_fault.core.tui.app as tui_app
 
     monkeypatch.setattr(tui_app, "TabbedContent", FakeTabs)
     monkeypatch.setattr(tui_app, "TabPane", FakeTabPane)
     monkeypatch.setattr(tui_app, "load_plugins", lambda debug=False: None)
+    monkeypatch.setattr(tui_app, "load_mutation_plugins", lambda debug=False: None)
 
     app._init_plugin_panels()
 
@@ -191,6 +197,7 @@ def test_run_plugin_uses_params(tmp_path: Path) -> None:
 
 def test_load_plugins_registers_dc_heatmap_tui_plugin() -> None:
     clear_registry_for_tests()
+    clear_mutation_registry_for_tests()
     clear_tui_plugins_for_tests()
 
     from jpeg_fault.core.analysis_registry import load_plugins
@@ -200,3 +207,75 @@ def test_load_plugins_registers_dc_heatmap_tui_plugin() -> None:
 
     assert "dc_heatmap" in ids
     assert "ac_energy_heatmap" in ids
+
+
+def test_load_plugins_registers_builtin_mutation_tui_plugins() -> None:
+    clear_registry_for_tests()
+    clear_mutation_registry_for_tests()
+    clear_tui_plugins_for_tests()
+
+    from jpeg_fault.core.analysis_registry import load_plugins
+    from jpeg_fault.core.mutation_registry import load_plugins as load_mutation_plugins
+
+    load_plugins(force=True)
+    load_mutation_plugins(force=True)
+    ids = {spec.id for spec in all_tui_plugins()}
+
+    assert "55" in ids
+    assert "aa" in ids
+
+
+def test_run_plugin_supports_mutation_plugins(tmp_path: Path) -> None:
+    clear_registry_for_tests()
+    clear_mutation_registry_for_tests()
+
+    calls: dict[str, object] = {}
+
+    class DummyMutationPlugin(MutationPlugin):
+        id = "dummy_mut"
+        label = "Dummy Mutation"
+        supported_formats = {"jpeg"}
+        params_spec = (PluginParamSpec(name="sample", label="Sample", type="int", default=2),)
+        needs = frozenset({"source_bytes", "parsed_jpeg", "entropy_ranges"})
+
+        def run(self, input_path: str, context: MutationContext) -> MutationResult:
+            calls["input_path"] = input_path
+            calls["params"] = context.params
+            calls["mutation_apply"] = context.mutation_apply
+            calls["repeats"] = context.repeats
+            calls["step"] = context.step
+            assert context.source_bytes is not None
+            out_path = Path(context.output_dir) / "mut.jpg"
+            out_path.write_bytes(context.source_bytes)
+            return MutationResult(self.id, [str(out_path)])
+
+    register_mutation(DummyMutationPlugin())
+
+    app = JpegFaultTui()
+    input_path = tmp_path / "in.jpg"
+    input_path.write_bytes(b"\xFF\xD8\xFF\xD9")
+
+    status = FakeStatic()
+    widgets = {
+        "#input-path": FakeInput(str(input_path)),
+        "#output-dir": FakeInput(str(tmp_path)),
+        "#debug": FakeCheckbox(False),
+        "#mutation-apply": type("FakeSelect", (), {"value": "cumulative"})(),
+        "#repeats": FakeInput("2"),
+        "#step": FakeInput("3"),
+        "#plugin-dummy_mut-sample": FakeInput("5"),
+        "#plugin-dummy_mut-status": status,
+    }
+    install_query(app, widgets)
+
+    app.call_from_thread = lambda fn, *a, **k: fn(*a, **k)  # type: ignore[assignment]
+    app.run_worker = lambda fn, **kwargs: fn()  # type: ignore[assignment]
+
+    app._run_plugin("dummy_mut")
+
+    assert calls["input_path"] == str(input_path)
+    assert calls["params"] == {"sample": 5}
+    assert calls["mutation_apply"] == "cumulative"
+    assert calls["repeats"] == 2
+    assert calls["step"] == 3
+    assert "Done" in status.text

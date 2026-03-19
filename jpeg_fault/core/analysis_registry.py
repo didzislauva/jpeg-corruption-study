@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from typing import Iterable
-import importlib
-import pkgutil
 
 from .analysis_types import AnalysisPlugin
-from .debug import debug_log
+from .plugin_loader import load_plugins_into
 
 
 _PLUGINS: dict[str, AnalysisPlugin] = {}
@@ -37,31 +35,16 @@ def clear_registry_for_tests() -> None:
 
 
 def load_plugins(force: bool = False, debug: bool = False) -> None:
-    # Import built-in plugins to populate the registry.
-    try:
-        from . import plugins as plugins_pkg
-    except ModuleNotFoundError:
-        debug_log(debug, "Plugins package not found; skipping plugin load.")
-        return
+    def module_filter(name: str, ispkg: bool) -> str | None:
+        if name.startswith("_") or name.startswith("mutation_"):
+            return None
+        return "package" if ispkg else "module"
 
-    if force:
-        _PLUGINS.clear()
-
-    if not force and _PLUGINS:
-        return
-
-    prefix = plugins_pkg.__name__ + "."
-    for module_info in pkgutil.iter_modules(plugins_pkg.__path__, prefix):
-        name = module_info.name
-        if module_info.ispkg:
-            target = f"{name}.plugin"
-        else:
-            target = name
-        try:
-            module = importlib.import_module(target)
-            if force:
-                importlib.reload(module)
-        except ModuleNotFoundError as e:
-            debug_log(debug, f"Skipping plugin {target}: {e}")
-        except Exception as e:
-            debug_log(debug, f"Failed to load plugin {target}: {e}")
+    load_plugins_into(
+        _PLUGINS,
+        force=force,
+        debug=debug,
+        missing_package_message="Plugins package not found; skipping plugin load.",
+        module_error_label="plugin",
+        module_filter=module_filter,
+    )

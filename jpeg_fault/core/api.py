@@ -22,6 +22,7 @@ from .jpeg_parse import parse_jpeg
 from .media import write_gif
 from .models import EntropyRange, Segment
 from .mutate import list_mutation_files, parse_mutation_mode, total_entropy_length, write_mutations
+from .plugin_contexts import build_analysis_context, build_mutation_context
 from .mutation_registry import get_plugin as get_mutation_plugin, load_plugins as load_mutation_plugins
 from .mutation_types import MutationContext
 from .report import print_report
@@ -478,7 +479,7 @@ def _run_analysis_plugin(
     if plugin.requires_mutations and mutation_count == 0:
         raise ValueError(f"Plugin {plugin_id} requires mutations, but none were generated.")
     params = validate_plugin_params(plugin, raw_param_map.get(plugin_id))
-    context = _build_analysis_context(
+    context = build_analysis_context(
         plugin=plugin,
         input_path=args.input_path,
         fmt=resolved_fmt,
@@ -489,6 +490,7 @@ def _run_analysis_plugin(
         segments=segments,
         entropy_ranges=entropy_ranges,
         mutation_paths=mutation_paths,
+        decoded_image=_decode_image(args.input_path) if "decoded_image" in getattr(plugin, "needs", frozenset()) else None,
     )
     return plugin.run(args.input_path, context)
 
@@ -507,60 +509,6 @@ def _parse_analysis_params(entries: List[str]) -> Dict[str, Dict[str, str]]:
             raise ValueError(f"Duplicate analysis param for {plugin_id}.{param_name}")
         plugin_params[param_name] = raw_value
     return params
-
-
-def _build_analysis_context(
-    *,
-    plugin,
-    input_path: str,
-    fmt: str,
-    output_dir: str,
-    debug: bool,
-    params: Dict[str, object],
-    data: bytes,
-    segments: List[Segment],
-    entropy_ranges: List[EntropyRange],
-    mutation_paths: List[str],
-) -> AnalysisContext:
-    needs = set(getattr(plugin, "needs", frozenset()))
-    return AnalysisContext(
-        input_path=input_path,
-        format=fmt,
-        output_dir=output_dir,
-        debug=debug,
-        params=params,
-        source_bytes=data if "source_bytes" in needs else None,
-        segments=segments if "parsed_jpeg" in needs else None,
-        entropy_ranges=entropy_ranges if "entropy_ranges" in needs else None,
-        decoded_image=_decode_image(input_path) if "decoded_image" in needs else None,
-        mutation_paths=mutation_paths if "mutation_outputs" in needs else None,
-    )
-
-
-def _build_mutation_context(
-    *,
-    plugin,
-    input_path: str,
-    fmt: str,
-    output_dir: str,
-    debug: bool,
-    params: Dict[str, object],
-    data: bytes,
-    segments: List[Segment],
-    entropy_ranges: List[EntropyRange],
-) -> MutationContext:
-    needs = set(getattr(plugin, "needs", frozenset()))
-    return MutationContext(
-        input_path=input_path,
-        format=fmt,
-        output_dir=output_dir,
-        debug=debug,
-        params=params,
-        source_bytes=data if "source_bytes" in needs else None,
-        segments=segments if "parsed_jpeg" in needs else None,
-        entropy_ranges=entropy_ranges if "entropy_ranges" in needs else None,
-    )
-
 
 def _decode_image(input_path: str):
     try:
@@ -596,12 +544,15 @@ def _run_mutation_plugins(
         if fmt not in plugin.supported_formats:
             raise ValueError(f"Mutation plugin {plugin_id} does not support format {fmt}")
         params = validate_plugin_params(plugin, raw_param_map.get(plugin_id))
-        context = _build_mutation_context(
+        context = build_mutation_context(
             plugin=plugin,
             input_path=args.input_path,
             fmt=fmt,
             output_dir=args.output_dir,
             debug=args.debug,
+            mutation_apply=args.mutation_apply,
+            repeats=args.repeats,
+            step=args.step,
             params=params,
             data=data,
             segments=segments,

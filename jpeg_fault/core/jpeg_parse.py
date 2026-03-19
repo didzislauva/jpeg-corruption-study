@@ -9,46 +9,8 @@ This module provides:
 
 from typing import Dict, List, Optional, Tuple
 
+from .constants.jpeg import JFIF_SIGNATURE, JFXX_SIGNATURE, JPEG_ZIGZAG_ORDER, MARKER_NAMES, NO_LENGTH_MARKERS
 from .models import EntropyRange, Segment
-
-MARKER_NAMES = {
-    0xD8: "SOI",
-    0xD9: "EOI",
-    0xC0: "SOF0",
-    0xC1: "SOF1",
-    0xC2: "SOF2",
-    0xC3: "SOF3",
-    0xC5: "SOF5",
-    0xC6: "SOF6",
-    0xC7: "SOF7",
-    0xC9: "SOF9",
-    0xCA: "SOF10",
-    0xCB: "SOF11",
-    0xCD: "SOF13",
-    0xCE: "SOF14",
-    0xCF: "SOF15",
-    0xC4: "DHT",
-    0xDB: "DQT",
-    0xDD: "DRI",
-    0xDA: "SOS",
-    0xFE: "COM",
-}
-
-for i in range(16):
-    MARKER_NAMES[0xE0 + i] = f"APP{i}"
-
-JPEG_ZIGZAG_ORDER = [
-    0, 1, 5, 6, 14, 15, 27, 28,
-    2, 4, 7, 13, 16, 26, 29, 42,
-    3, 8, 12, 17, 25, 30, 41, 43,
-    9, 11, 18, 24, 31, 40, 44, 53,
-    10, 19, 23, 32, 39, 45, 52, 54,
-    20, 22, 33, 38, 46, 51, 55, 60,
-    21, 34, 37, 47, 50, 56, 59, 61,
-    35, 36, 48, 49, 57, 58, 62, 63,
-]
-
-NO_LENGTH_MARKERS = {0xD8, 0xD9}
 
 
 def read_u16(be: bytes) -> int:
@@ -174,7 +136,7 @@ def decode_app0(payload: bytes) -> Optional[Dict[str, str]]:
     """
     Decode APP0 payload if it matches JFIF or JFXX signatures.
     """
-    if payload.startswith(b"JFIF\x00") and len(payload) >= 14:
+    if payload.startswith(JFIF_SIGNATURE) and len(payload) >= 14:
         ver = f"{payload[5]}.{payload[6]:02d}"
         units = payload[7]
         xden = read_u16(payload[8:10])
@@ -186,7 +148,7 @@ def decode_app0(payload: bytes) -> Optional[Dict[str, str]]:
             "x_density": str(xden),
             "y_density": str(yden),
         }
-    if payload.startswith(b"JFXX\x00"):
+    if payload.startswith(JFXX_SIGNATURE):
         return {"type": "JFXX"}
     return None
 

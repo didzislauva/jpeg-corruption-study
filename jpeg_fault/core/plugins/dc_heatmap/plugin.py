@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ...analysis_registry import register
 from ...analysis_types import AnalysisContext, AnalysisPlugin, AnalysisResult, PluginParamSpec
-from ...dct_analysis import write_dc_heatmap
+from .._shared.dct_heatmap import write_dc_heatmap
 from ...tui_plugin_registry import register_tui_plugin
 from ...tui_plugin_types import TuiPluginSpec
 
@@ -18,38 +18,17 @@ class DcHeatmapPlugin(AnalysisPlugin):
     requires_mutations: bool = False
     needs: frozenset[str] = frozenset()
     params_spec: tuple[PluginParamSpec, ...] = (
-        PluginParamSpec(
-            name="out_path",
-            label="Output path",
-            type="path",
-            required=False,
-            help="Optional output image path for the generated DC heatmap.",
-        ),
-        PluginParamSpec(
-            name="cmap",
-            label="Colormap",
-            type="string",
-            required=False,
-            default="coolwarm",
-            help="Matplotlib colormap name for the rendered heatmap.",
-        ),
+        PluginParamSpec(name="out_path", label="Output path", type="path", help="Optional output image path for the generated DC heatmap."),
+        PluginParamSpec(name="cmap", label="Colormap", type="string", default="coolwarm", help="Matplotlib colormap name for the rendered heatmap."),
         PluginParamSpec(
             name="plane_mode",
             label="Plane mode",
             type="choice",
-            required=False,
             default="bt601",
             choices=("bt601", "bt709", "average", "lightness", "max", "min", "red", "green", "blue"),
             help="Choose how RGB pixels are projected to the single-channel plane used for the block transform.",
         ),
-        PluginParamSpec(
-            name="block_size",
-            label="Block size",
-            type="int",
-            required=False,
-            default=8,
-            help="Transform block size. 8 is JPEG-native; other values are exploratory.",
-        ),
+        PluginParamSpec(name="block_size", label="Block size", type="int", default=8, help="Transform block size. 8 is JPEG-native; other values are exploratory."),
     )
 
     def run(self, input_path: str, context: AnalysisContext) -> AnalysisResult:
@@ -74,22 +53,11 @@ class DcHeatmapPlugin(AnalysisPlugin):
             plane_mode=plane_mode,
             block_size=block_size,
         )
-        return AnalysisResult(
-            self.id,
-            [str(out_path)],
-            {
-                "block_rows": block_rows,
-                "block_cols": block_cols,
-                "cmap": cmap,
-                "plane_mode": plane_mode,
-                "block_size": block_size,
-            },
-        )
+        return AnalysisResult(self.id, [str(out_path)], {"block_rows": block_rows, "block_cols": block_cols, "cmap": cmap, "plane_mode": plane_mode, "block_size": block_size})
 
 
 plugin = DcHeatmapPlugin()
 register(plugin)
-
 
 register_tui_plugin(
     TuiPluginSpec(

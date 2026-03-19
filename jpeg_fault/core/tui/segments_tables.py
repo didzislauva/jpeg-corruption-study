@@ -3,10 +3,11 @@ from __future__ import annotations
 import ast
 import re
 from pprint import pformat
-from typing import Optional
+from typing import Optional, Tuple
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches, WrongType
 from textual.widgets import (
     Button,
     Checkbox,
@@ -20,8 +21,8 @@ from textual.widgets import (
 )
 from rich.text import Text
 
-from .jpeg_parse import (
-    JPEG_ZIGZAG_ORDER,
+from ..constants.jpeg import JPEG_ZIGZAG_ORDER
+from ..jpeg_parse import (
     build_dht_payload,
     build_dqt_payload,
     decode_dht,
@@ -33,6 +34,9 @@ from .jpeg_parse import (
     dqt_natural_grid_to_values,
     dqt_values_to_natural_grid,
 )
+
+
+QUERY_ERRORS = (NoMatches, WrongType, AssertionError)
 
 
 class TuiSegmentsTablesMixin:
@@ -100,7 +104,11 @@ class TuiSegmentsTablesMixin:
         for name in ("Grid", "Zigzag", "Stats", "Usage", "Heatmap"):
             pane_id = name.lower()
             tabs.add_pane(
-                TabPane(name, RichLog(id=f"info-{key}-{pane_id}", highlight=True, classes="dqt-log"))
+                TabPane(
+                    name,
+                    RichLog(id=f"info-{key}-{pane_id}", highlight=True, classes="dqt-log"),
+                    id=self._dynamic_pane_id(f"{key}-pane-{pane_id}"),
+                )
             )
         tabs.add_pane(
             TabPane(
@@ -117,6 +125,7 @@ class TuiSegmentsTablesMixin:
                     Static("Raw payload hex", classes="field", id=f"{key}-adv-title"),
                     TextArea("", id=f"{key}-raw-hex", soft_wrap=True, show_line_numbers=True, classes="dqt-edit-area"),
                 ),
+                id=self._dynamic_pane_id(f"{key}-pane-edit"),
             )
         )
 
@@ -140,7 +149,11 @@ class TuiSegmentsTablesMixin:
         for name in ("Tables", "Counts", "Symbols", "Usage", "Codes"):
             pane_id = name.lower()
             tabs.add_pane(
-                TabPane(name, RichLog(id=f"info-{key}-{pane_id}", highlight=True, classes="dht-log"))
+                TabPane(
+                    name,
+                    RichLog(id=f"info-{key}-{pane_id}", highlight=True, classes="dht-log"),
+                    id=self._dynamic_pane_id(f"{key}-pane-{pane_id}"),
+                )
             )
         tabs.add_pane(
             TabPane(
@@ -157,6 +170,7 @@ class TuiSegmentsTablesMixin:
                     Static("Raw payload hex", classes="field", id=f"{key}-adv-title"),
                     TextArea("", id=f"{key}-raw-hex", soft_wrap=True, show_line_numbers=True, classes="dht-edit-area"),
                 ),
+                id=self._dynamic_pane_id(f"{key}-pane-edit"),
             )
         )
 
@@ -186,8 +200,11 @@ class TuiSegmentsTablesMixin:
         if not key:
             return
         self._set_dqt_dirty(key, True)
-        if self.query_one(f"#{key}-manual-length", Checkbox).value:
-            self._refresh_dqt_preview(key)
+        try:
+            if self.query_one(f"#{key}-manual-length", Checkbox).value:
+                self._refresh_dqt_preview(key)
+        except QUERY_ERRORS:
+            return
 
     @on(TextArea.Changed)
     def _on_dqt_textarea_changed(self, event: TextArea.Changed) -> None:
@@ -200,31 +217,40 @@ class TuiSegmentsTablesMixin:
             self._update_dqt_active_highlight(key)
         else:
             self.dqt_active_highlight.pop(key, None)
-        if not self.query_one(f"#{key}-manual-length", Checkbox).value:
-            try:
-                payload = self._build_dqt_payload(key)
-            except Exception:
-                self._set_dqt_dirty(key, True)
-            else:
-                self.query_one(f"#{key}-length", Input).value = f"{len(payload) + 2:04X}"
-        self._refresh_dqt_preview(key)
+        try:
+            if not self.query_one(f"#{key}-manual-length", Checkbox).value:
+                try:
+                    payload = self._build_dqt_payload(key)
+                except Exception:
+                    self._set_dqt_dirty(key, True)
+                else:
+                    self.query_one(f"#{key}-length", Input).value = f"{len(payload) + 2:04X}"
+            self._refresh_dqt_preview(key)
+        except QUERY_ERRORS:
+            return
 
     @on(TextArea.SelectionChanged)
     def _on_dqt_selection_changed(self, event: TextArea.SelectionChanged) -> None:
         key = self._dqt_key_from_id(event.text_area.id, "-grid-edit")
         if key:
             self._update_dqt_active_highlight(key)
-            if key in self.dqt_segment_info and key in self.dqt_preview_payload:
-                offset, _, length_field, _ = self.dqt_segment_info[key]
-                self._render_dqt_views(key, self.dqt_preview_payload[key], offset, length_field)
+            try:
+                if key in self.dqt_segment_info and key in self.dqt_preview_payload:
+                    offset, _, length_field, _ = self.dqt_segment_info[key]
+                    self._render_dqt_views(key, self.dqt_preview_payload[key], offset, length_field)
+            except QUERY_ERRORS:
+                return
             return
         key = self._dht_key_from_id(event.text_area.id, "-table-edit")
         if not key:
             return
         self._update_dht_active_highlight(key)
-        if key in self.dht_segment_info and key in self.dht_preview_payload:
-            offset, _, length_field, _ = self.dht_segment_info[key]
-            self._render_dht_views(key, self.dht_preview_payload[key], offset, length_field)
+        try:
+            if key in self.dht_segment_info and key in self.dht_preview_payload:
+                offset, _, length_field, _ = self.dht_segment_info[key]
+                self._render_dht_views(key, self.dht_preview_payload[key], offset, length_field)
+        except QUERY_ERRORS:
+            return
 
     @on(Button.Pressed)
     def _on_dqt_save(self, event: Button.Pressed) -> None:
@@ -268,8 +294,11 @@ class TuiSegmentsTablesMixin:
         if not key:
             return
         self._set_dht_dirty(key, True)
-        if self.query_one(f"#{key}-manual-length", Checkbox).value:
-            self._refresh_dht_preview(key)
+        try:
+            if self.query_one(f"#{key}-manual-length", Checkbox).value:
+                self._refresh_dht_preview(key)
+        except QUERY_ERRORS:
+            return
 
     @on(TextArea.Changed)
     def _on_dht_textarea_changed(self, event: TextArea.Changed) -> None:
@@ -282,14 +311,17 @@ class TuiSegmentsTablesMixin:
             self._update_dht_active_highlight(key)
         else:
             self.dht_active_highlight.pop(key, None)
-        if not self.query_one(f"#{key}-manual-length", Checkbox).value:
-            try:
-                payload = self._build_dht_payload(key)
-            except Exception:
-                self._set_dht_dirty(key, True)
-            else:
-                self.query_one(f"#{key}-length", Input).value = f"{len(payload) + 2:04X}"
-        self._refresh_dht_preview(key)
+        try:
+            if not self.query_one(f"#{key}-manual-length", Checkbox).value:
+                try:
+                    payload = self._build_dht_payload(key)
+                except Exception:
+                    self._set_dht_dirty(key, True)
+                else:
+                    self.query_one(f"#{key}-length", Input).value = f"{len(payload) + 2:04X}"
+            self._refresh_dht_preview(key)
+        except QUERY_ERRORS:
+            return
 
     @on(Button.Pressed)
     def _on_dht_save(self, event: Button.Pressed) -> None:
@@ -313,7 +345,7 @@ class TuiSegmentsTablesMixin:
         targets: list[Tuple[str, object]] = []
         dqt_segments = [s for s in segments if s.name == "DQT"]
         if not dqt_segments:
-            pane = TabPane("DQT", RichLog(id="info-dqt-empty", highlight=True))
+            pane = TabPane("DQT", RichLog(id="info-dqt-empty", highlight=True), id=self._dynamic_pane_id("dqt-pane-empty"))
             dqt_tabs.add_pane(pane)
             self.query_one("#info-dqt-empty", RichLog).write("No DQT segments found.")
             dqt_tabs.show_tab(pane.id)
@@ -322,7 +354,7 @@ class TuiSegmentsTablesMixin:
         for idx, seg in enumerate(dqt_segments, start=1):
             key = f"dqt-{seg.offset:08X}"
             label = f"DQT #{idx}"
-            pane = TabPane(label, self._build_dqt_segment_pane(key, label))
+            pane = TabPane(label, self._build_dqt_segment_pane(key, label), id=self._dynamic_pane_id(f"dqt-pane-{idx}"))
             dqt_tabs.add_pane(pane)
             self._init_dqt_detail_tabs(key)
             if first_pane_id is None:
@@ -338,7 +370,7 @@ class TuiSegmentsTablesMixin:
         targets: list[Tuple[str, object]] = []
         dht_segments = [s for s in segments if s.name == "DHT"]
         if not dht_segments:
-            pane = TabPane("DHT", RichLog(id="info-dht-empty", highlight=True))
+            pane = TabPane("DHT", RichLog(id="info-dht-empty", highlight=True), id=self._dynamic_pane_id("dht-pane-empty"))
             dht_tabs.add_pane(pane)
             self.query_one("#info-dht-empty", RichLog).write("No DHT segments found.")
             dht_tabs.show_tab(pane.id)
@@ -347,7 +379,7 @@ class TuiSegmentsTablesMixin:
         for idx, seg in enumerate(dht_segments, start=1):
             key = f"dht-{seg.offset:08X}"
             label = f"DHT #{idx}"
-            pane = TabPane(label, self._build_dht_segment_pane(key, label))
+            pane = TabPane(label, self._build_dht_segment_pane(key, label), id=self._dynamic_pane_id(f"dht-pane-{idx}"))
             dht_tabs.add_pane(pane)
             self._init_dht_detail_tabs(key)
             if first_pane_id is None:
@@ -366,7 +398,10 @@ class TuiSegmentsTablesMixin:
             self._render_dht_segment(data, seg, key)
 
     def _render_dht_segment(self, data: bytes, seg, key: str) -> None:
-        left_log = self.query_one(f"#info-{key}-left", RichLog)
+        try:
+            left_log = self.query_one(f"#info-{key}-left", RichLog)
+        except QUERY_ERRORS:
+            return
         if seg.payload_offset is None or seg.payload_length is None:
             left_log.clear()
             left_log.write("DHT has no payload.")
@@ -381,12 +416,15 @@ class TuiSegmentsTablesMixin:
         self._render_dht_views(key, payload, seg.offset, seg.length_field or 0)
 
     def _render_dht_views(self, key: str, payload: bytes, offset: int, length_field: int) -> None:
-        left_log = self.query_one(f"#info-{key}-left", RichLog)
-        tables_log = self.query_one(f"#info-{key}-tables", RichLog)
-        counts_log = self.query_one(f"#info-{key}-counts", RichLog)
-        symbols_log = self.query_one(f"#info-{key}-symbols", RichLog)
-        usage_log = self.query_one(f"#info-{key}-usage", RichLog)
-        codes_log = self.query_one(f"#info-{key}-codes", RichLog)
+        try:
+            left_log = self.query_one(f"#info-{key}-left", RichLog)
+            tables_log = self.query_one(f"#info-{key}-tables", RichLog)
+            counts_log = self.query_one(f"#info-{key}-counts", RichLog)
+            symbols_log = self.query_one(f"#info-{key}-symbols", RichLog)
+            usage_log = self.query_one(f"#info-{key}-usage", RichLog)
+            codes_log = self.query_one(f"#info-{key}-codes", RichLog)
+        except QUERY_ERRORS:
+            return
         for log in (left_log, tables_log, counts_log, symbols_log, usage_log, codes_log):
             log.clear()
         # Keep one decode pass for summaries and one for the full structured views.
@@ -554,7 +592,10 @@ class TuiSegmentsTablesMixin:
         return scans
 
     def _render_dqt_segment(self, data: bytes, seg, key: str) -> None:
-        left_log = self.query_one(f"#info-{key}-left", RichLog)
+        try:
+            left_log = self.query_one(f"#info-{key}-left", RichLog)
+        except QUERY_ERRORS:
+            return
         if seg.payload_offset is None or seg.payload_length is None:
             left_log.clear()
             left_log.write("DQT has no payload.")
@@ -569,12 +610,15 @@ class TuiSegmentsTablesMixin:
         self._render_dqt_views(key, payload, seg.offset, seg.length_field or 0)
 
     def _render_dqt_views(self, key: str, payload: bytes, offset: int, length_field: int) -> None:
-        left_log = self.query_one(f"#info-{key}-left", RichLog)
-        grid_log = self.query_one(f"#info-{key}-grid", RichLog)
-        zigzag_log = self.query_one(f"#info-{key}-zigzag", RichLog)
-        stats_log = self.query_one(f"#info-{key}-stats", RichLog)
-        usage_log = self.query_one(f"#info-{key}-usage", RichLog)
-        heatmap_log = self.query_one(f"#info-{key}-heatmap", RichLog)
+        try:
+            left_log = self.query_one(f"#info-{key}-left", RichLog)
+            grid_log = self.query_one(f"#info-{key}-grid", RichLog)
+            zigzag_log = self.query_one(f"#info-{key}-zigzag", RichLog)
+            stats_log = self.query_one(f"#info-{key}-stats", RichLog)
+            usage_log = self.query_one(f"#info-{key}-usage", RichLog)
+            heatmap_log = self.query_one(f"#info-{key}-heatmap", RichLog)
+        except QUERY_ERRORS:
+            return
         for log in (left_log, grid_log, zigzag_log, stats_log, usage_log, heatmap_log):
             log.clear()
         # The left panel shows the segment as stored; the right panels show derived views.
@@ -804,9 +848,12 @@ class TuiSegmentsTablesMixin:
                 "precision_bits": int(table.get("precision_bits", 8)),
                 "grid": dqt_values_to_natural_grid(list(table.get("values", []))),
             })
-        self.query_one(f"#{key}-raw-hex", TextArea).text = self._bytes_to_hex(payload)
-        self.query_one(f"#{key}-grid-edit", TextArea).text = pformat(tables, width=100, sort_dicts=False)
-        self.query_one(f"#{key}-length", Input).value = f"{length_field:04X}"
+        try:
+            self.query_one(f"#{key}-raw-hex", TextArea).text = self._bytes_to_hex(payload)
+            self.query_one(f"#{key}-grid-edit", TextArea).text = pformat(tables, width=100, sort_dicts=False)
+            self.query_one(f"#{key}-length", Input).value = f"{length_field:04X}"
+        except QUERY_ERRORS:
+            return
         self._update_dqt_active_highlight(key)
 
     def _update_dqt_active_highlight(self, key: str) -> None:
@@ -1006,9 +1053,12 @@ class TuiSegmentsTablesMixin:
                 "counts": list(table["counts"]),
                 "symbols": list(table["symbols"]),
             })
-        self.query_one(f"#{key}-raw-hex", TextArea).text = self._bytes_to_hex(payload)
-        self.query_one(f"#{key}-table-edit", TextArea).text = pformat(tables, width=100, sort_dicts=False)
-        self.query_one(f"#{key}-length", Input).value = f"{length_field:04X}"
+        try:
+            self.query_one(f"#{key}-raw-hex", TextArea).text = self._bytes_to_hex(payload)
+            self.query_one(f"#{key}-table-edit", TextArea).text = pformat(tables, width=100, sort_dicts=False)
+            self.query_one(f"#{key}-length", Input).value = f"{length_field:04X}"
+        except QUERY_ERRORS:
+            return
         self._update_dht_active_highlight(key)
 
     def _update_dht_active_highlight(self, key: str) -> None:
@@ -1134,36 +1184,27 @@ class TuiSegmentsTablesMixin:
         )
 
     def _refresh_dht_preview(self, key: str) -> None:
-        if key not in self.dht_segment_info:
-            return
         self._update_dht_active_highlight(key)
-        err = self.query_one(f"#{key}-error", Static)
-        warning = None
-        try:
-            payload = self._build_dht_payload(key)
-            length_field = self._dht_length_from_ui(key, payload)
-        except Exception as e:
-            if self.query_one(f"#{key}-advanced-mode", Checkbox).value:
-                try:
-                    payload = self._parse_hex_lenient(
-                        self.query_one(f"#{key}-raw-hex", TextArea).text
-                    )
-                    length_field = self._dht_length_from_ui(key, payload)
-                    warning = f"Warning: {e}"
-                except Exception:
-                    err.update(f"Error: {e}")
-                    return
-            else:
-                err.update(f"Error: {e}")
-                return
-        err.update(warning or "")
-        self._set_dht_preview_payload(key, payload)
-        offset, _, _, _ = self.dht_segment_info[key]
-        self._render_dht_views(key, payload, offset, length_field)
-        self._set_dht_dirty(key, True)
+        self._refresh_keyed_segment_preview(
+            key=key,
+            segment_info=self.dht_segment_info,
+            err_id=f"{key}-error",
+            build_payload=self._build_dht_payload,
+            length_from_ui=self._dht_length_from_ui,
+            set_preview=self._set_dht_preview_payload,
+            render_views=self._render_dht_views,
+            set_dirty=self._set_dht_dirty,
+            recover_payload=self._recover_dht_preview_payload,
+        )
 
     def _set_dht_preview_payload(self, key: str, payload: bytes) -> None:
         self.dht_preview_payload[key] = payload
+
+    def _recover_dht_preview_payload(self, key: str, error: Exception) -> Tuple[bytes, Optional[str]]:
+        if not self.query_one(f"#{key}-advanced-mode", Checkbox).value:
+            raise error
+        payload = self._parse_hex_lenient(self.query_one(f"#{key}-raw-hex", TextArea).text)
+        return payload, f"Warning: {error}"
 
     def _dht_save_inputs(self, key: str) -> Tuple[str, bytes, int]:
         input_path = self.query_one("#input-path", Input).value.strip()

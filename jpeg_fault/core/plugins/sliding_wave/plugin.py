@@ -7,7 +7,7 @@ from ...analysis_registry import register
 from ...analysis_types import AnalysisContext, AnalysisPlugin, AnalysisResult, PluginParamSpec
 from ...tui_plugin_registry import register_tui_plugin
 from ...tui_plugin_types import TuiPluginSpec
-from ...wave_analysis import validate_sliding_stats, write_sliding_wave_chart
+from ...wave_analysis import write_sliding_wave_chart
 
 
 @dataclass(frozen=True)
@@ -18,44 +18,29 @@ class SlidingWavePlugin(AnalysisPlugin):
     requires_mutations: bool = False
     needs: frozenset[str] = frozenset({"source_bytes", "entropy_ranges"})
     params_spec: tuple[PluginParamSpec, ...] = (
-        PluginParamSpec(
-            name="out_path",
-            label="Output path",
-            type="path",
-            required=False,
-            help="Optional output image path for the generated sliding-wave chart.",
-        ),
-        PluginParamSpec(
-            name="csv_path",
-            label="CSV output path",
-            type="path",
-            required=False,
-            help="Optional CSV export path for the selected sliding-window stats.",
-        ),
+        PluginParamSpec(name="out_path", label="Output path", type="path", help="Optional output image path."),
+        PluginParamSpec(name="csv_path", label="CSV output path", type="path", help="Optional CSV export path."),
         PluginParamSpec(
             name="window",
             label="Window size",
             type="int",
-            required=False,
             default=256,
-            help="Sliding-window size in entropy-stream bytes.",
+            help="Sliding window size in bytes.",
         ),
         PluginParamSpec(
             name="stats",
             label="Stats",
             type="string",
-            required=False,
             default="mean,variance,entropy",
-            help="Comma-separated stats: mean,variance,std,entropy,min,max,range,energy",
+            help="Comma-separated stats from mean,variance,std,entropy,min,max,range,energy.",
         ),
         PluginParamSpec(
             name="transform",
             label="Byte transform",
             type="choice",
-            required=False,
             default="raw",
             choices=("raw", "diff1", "diff2"),
-            help="Apply a byte-stream transform before computing the sliding-window stats.",
+            help="Byte-stream transform applied before computing sliding stats.",
         ),
     )
 
@@ -72,8 +57,8 @@ class SlidingWavePlugin(AnalysisPlugin):
             out_path = out_dir / (Path(input_path).stem + "_sliding_wave.png")
         csv_path = params.get("csv_path")
         window = int(params.get("window", 256))
-        stats_spec = str(params.get("stats", "mean,variance,entropy"))
-        stats = validate_sliding_stats(stats_spec)
+        stats_value = str(params.get("stats", "mean,variance,entropy"))
+        stats = [part.strip() for part in stats_value.split(",") if part.strip()]
         transform = str(params.get("transform", "raw"))
         data = context.source_bytes or Path(input_path).read_bytes()
         entropy_ranges = context.entropy_ranges or []
@@ -81,8 +66,8 @@ class SlidingWavePlugin(AnalysisPlugin):
             data,
             entropy_ranges,
             str(out_path),
-            window=window,
             debug=context.debug,
+            window=window,
             stats=stats,
             transform=transform,
             csv_path=str(csv_path) if csv_path else None,
@@ -90,16 +75,11 @@ class SlidingWavePlugin(AnalysisPlugin):
         outputs = [str(out_path)]
         if csv_path:
             outputs.append(str(csv_path))
-        return AnalysisResult(
-            self.id,
-            outputs,
-            {"stream_len": len(data), "window": window, "stats": list(stats), "transform": transform},
-        )
+        return AnalysisResult(self.id, outputs, {"stream_len": len(data), "window": window, "transform": transform})
 
 
 plugin = SlidingWavePlugin()
 register(plugin)
-
 
 register_tui_plugin(
     TuiPluginSpec(

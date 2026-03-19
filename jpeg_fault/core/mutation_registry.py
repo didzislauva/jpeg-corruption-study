@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from typing import Iterable
-import importlib
-import pkgutil
 
-from .debug import debug_log
 from .mutation_types import MutationPlugin
+from .plugin_loader import load_plugins_into
 
 
 _MUTATION_PLUGINS: dict[str, MutationPlugin] = {}
@@ -37,27 +35,16 @@ def clear_registry_for_tests() -> None:
 
 
 def load_plugins(force: bool = False, debug: bool = False) -> None:
-    try:
-        from . import mutation_plugins as plugins_pkg
-    except ModuleNotFoundError:
-        debug_log(debug, "Mutation plugins package not found; skipping mutation plugin load.")
-        return
+    def module_filter(name: str, ispkg: bool) -> str | None:
+        if not name.startswith("mutation_"):
+            return None
+        return "package" if ispkg else "module"
 
-    if force:
-        _MUTATION_PLUGINS.clear()
-
-    if not force and _MUTATION_PLUGINS:
-        return
-
-    prefix = plugins_pkg.__name__ + "."
-    for module_info in pkgutil.iter_modules(plugins_pkg.__path__, prefix):
-        name = module_info.name
-        target = f"{name}.plugin" if module_info.ispkg else name
-        try:
-            module = importlib.import_module(target)
-            if force:
-                importlib.reload(module)
-        except ModuleNotFoundError as e:
-            debug_log(debug, f"Skipping mutation plugin {target}: {e}")
-        except Exception as e:
-            debug_log(debug, f"Failed to load mutation plugin {target}: {e}")
+    load_plugins_into(
+        _MUTATION_PLUGINS,
+        force=force,
+        debug=debug,
+        missing_package_message="Mutation plugins package not found; skipping mutation plugin load.",
+        module_error_label="mutation plugin",
+        module_filter=module_filter,
+    )

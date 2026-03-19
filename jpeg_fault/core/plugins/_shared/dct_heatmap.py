@@ -9,7 +9,7 @@ import math
 import time
 from typing import Any, Tuple
 
-from .debug import debug_log
+from ...debug import debug_log
 
 
 def dct_deps() -> Tuple[Any, Any, Any]:

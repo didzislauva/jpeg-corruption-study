@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches, WrongType
 from textual.widgets import (
     Button,
     Checkbox,
@@ -22,7 +23,7 @@ from textual.widgets import (
 )
 from rich.text import Text
 
-from .jpeg_parse import (
+from ..jpeg_parse import (
     build_dri_payload,
     build_sof0_payload,
     decode_app0,
@@ -30,6 +31,9 @@ from .jpeg_parse import (
     decode_sof0,
     decode_sof_components,
 )
+
+
+QUERY_ERRORS = (NoMatches, WrongType, AssertionError)
 
 
 class TuiSegmentsBasicMixin:
@@ -81,7 +85,7 @@ class TuiSegmentsBasicMixin:
     def _init_sof0_tabs(self) -> None:
         tabs = self.query_one("#sof-tabs", TabbedContent)
         tabs.clear_panes()
-        pane = TabPane("SOFn", RichLog(id="info-sof-empty", highlight=True))
+        pane = TabPane("SOFn", RichLog(id="info-sof-empty", highlight=True), id=self._dynamic_pane_id("sof-pane-empty"))
         tabs.add_pane(pane)
         self.query_one("#info-sof-empty", RichLog).write("No SOF segments found.")
         tabs.show_tab(pane.id)
@@ -91,7 +95,13 @@ class TuiSegmentsBasicMixin:
         tabs.clear_panes()
         for name in ("Frame", "Components", "Tables"):
             pane_id = name.lower()
-            tabs.add_pane(TabPane(name, RichLog(id=f"info-{key}-{pane_id}", highlight=True, classes="sof-log")))
+            tabs.add_pane(
+                TabPane(
+                    name,
+                    RichLog(id=f"info-{key}-{pane_id}", highlight=True, classes="sof-log"),
+                    id=self._dynamic_pane_id(f"{key}-pane-{pane_id}"),
+                )
+            )
         if not editable:
             return
         tabs.add_pane(
@@ -109,6 +119,7 @@ class TuiSegmentsBasicMixin:
                     Static("Raw payload hex", classes="field", id="sof0-adv-title"),
                     TextArea("", id="sof0-raw-hex", soft_wrap=True, show_line_numbers=True, classes="sof-edit-area"),
                 ),
+                id=self._dynamic_pane_id(f"{key}-pane-edit"),
             )
         )
 
@@ -118,7 +129,7 @@ class TuiSegmentsBasicMixin:
         targets: list[tuple[str, object, bool]] = []
         sof_segments = [s for s in segments if s.name.startswith("SOF")]
         if not sof_segments:
-            pane = TabPane("SOFn", RichLog(id="info-sof-empty", highlight=True))
+            pane = TabPane("SOFn", RichLog(id="info-sof-empty", highlight=True), id=self._dynamic_pane_id("sof-pane-empty"))
             sof_tabs.add_pane(pane)
             self.query_one("#info-sof-empty", RichLog).write("No SOF segments found.")
             sof_tabs.show_tab(pane.id)
@@ -129,7 +140,7 @@ class TuiSegmentsBasicMixin:
             editable = seg.name == "SOF0" and not editable_assigned
             key = "sof0" if editable else f"sof-{seg.offset:08X}"
             label = f"{seg.name} #{idx}" if len(sof_segments) > 1 else seg.name
-            pane = TabPane(label, self._build_sof_segment_pane(key, label, editable))
+            pane = TabPane(label, self._build_sof_segment_pane(key, label, editable), id=self._dynamic_pane_id(f"sof-pane-{idx}"))
             sof_tabs.add_pane(pane)
             self._init_sof_detail_tabs(key, editable)
             if first_pane_id is None:
@@ -145,7 +156,13 @@ class TuiSegmentsBasicMixin:
         tabs.clear_panes()
         for name in ("Summary", "Effect"):
             pane_id = name.lower()
-            tabs.add_pane(TabPane(name, RichLog(id=f"info-dri-{pane_id}", highlight=True, classes="dri-log")))
+            tabs.add_pane(
+                TabPane(
+                    name,
+                    RichLog(id=f"info-dri-{pane_id}", highlight=True, classes="dri-log"),
+                    id=self._dynamic_pane_id(f"dri-pane-{pane_id}"),
+                )
+            )
         tabs.add_pane(
             TabPane(
                 "Edit",
@@ -161,6 +178,7 @@ class TuiSegmentsBasicMixin:
                     Static("Raw payload hex", classes="field", id="dri-adv-title"),
                     TextArea("", id="dri-raw-hex", soft_wrap=True, show_line_numbers=True, classes="dri-edit-area"),
                 ),
+                id=self._dynamic_pane_id("dri-pane-edit"),
             )
         )
 
@@ -553,10 +571,13 @@ class TuiSegmentsBasicMixin:
 
     @on(Checkbox.Changed, "#app0-advanced-mode")
     def _on_app0_mode_changed(self) -> None:
-        self._apply_app0_mode_visibility()
-        self._update_app0_length_field()
-        self._refresh_app0_preview()
-        self._mark_app0_dirty(True)
+        try:
+            self._apply_app0_mode_visibility()
+            self._update_app0_length_field()
+            self._refresh_app0_preview()
+            self._mark_app0_dirty(True)
+        except QUERY_ERRORS:
+            return
 
     @on(Checkbox.Changed)
     def _on_sof0_checkbox_changed(self, event: Checkbox.Changed) -> None:
@@ -595,10 +616,13 @@ class TuiSegmentsBasicMixin:
     @on(Checkbox.Changed, "#app0-manual-length")
     def _on_app0_manual_length_changed(self) -> None:
         self._apply_app0_mode_visibility()
-        if not self.query_one("#app0-manual-length", Checkbox).value:
-            self._update_app0_length_field()
-        self._refresh_app0_preview()
-        self._mark_app0_dirty(True)
+        try:
+            if not self.query_one("#app0-manual-length", Checkbox).value:
+                self._update_app0_length_field()
+            self._refresh_app0_preview()
+            self._mark_app0_dirty(True)
+        except QUERY_ERRORS:
+            return
 
     @on(Input.Changed)
     def _on_app0_input_changed(self, event: Input.Changed) -> None:
@@ -607,33 +631,45 @@ class TuiSegmentsBasicMixin:
         if event.input.id == "app0-length":
             self._mark_app0_dirty(True)
             return
-        self._update_app0_length_field()
-        self._refresh_app0_preview()
-        self._mark_app0_dirty(True)
+        try:
+            self._update_app0_length_field()
+            self._refresh_app0_preview()
+            self._mark_app0_dirty(True)
+        except QUERY_ERRORS:
+            return
 
     @on(Input.Changed)
     def _on_sof0_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "sof0-length":
             return
         self._mark_sof0_dirty(True)
-        if self.query_one("#sof0-manual-length", Checkbox).value:
-            self._refresh_sof0_preview()
+        try:
+            if self.query_one("#sof0-manual-length", Checkbox).value:
+                self._refresh_sof0_preview()
+        except QUERY_ERRORS:
+            return
 
     @on(Input.Changed)
     def _on_dri_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "dri-length":
             return
         self._mark_dri_dirty(True)
-        if self.query_one("#dri-manual-length", Checkbox).value:
-            self._refresh_dri_preview()
+        try:
+            if self.query_one("#dri-manual-length", Checkbox).value:
+                self._refresh_dri_preview()
+        except QUERY_ERRORS:
+            return
 
     @on(TextArea.Changed)
     def _on_app0_textarea_changed(self, event: TextArea.Changed) -> None:
         if not event.text_area.id or not event.text_area.id.startswith("app0-"):
             return
-        self._update_app0_length_field()
-        self._refresh_app0_preview()
-        self._mark_app0_dirty(True)
+        try:
+            self._update_app0_length_field()
+            self._refresh_app0_preview()
+            self._mark_app0_dirty(True)
+        except QUERY_ERRORS:
+            return
 
     @on(TextArea.Changed)
     def _on_sof0_textarea_changed(self, event: TextArea.Changed) -> None:
@@ -643,36 +679,45 @@ class TuiSegmentsBasicMixin:
             self._update_sof0_active_highlight()
         else:
             self.sof0_active_highlight = None
-        if not self.query_one("#sof0-manual-length", Checkbox).value:
-            try:
-                payload = self._build_sof0_payload()
-            except Exception:
-                self._mark_sof0_dirty(True)
-            else:
-                self.query_one("#sof0-length", Input).value = f"{len(payload) + 2:04X}"
-        self._refresh_sof0_preview()
+        try:
+            if not self.query_one("#sof0-manual-length", Checkbox).value:
+                try:
+                    payload = self._build_sof0_payload()
+                except Exception:
+                    self._mark_sof0_dirty(True)
+                else:
+                    self.query_one("#sof0-length", Input).value = f"{len(payload) + 2:04X}"
+            self._refresh_sof0_preview()
+        except QUERY_ERRORS:
+            return
 
     @on(TextArea.SelectionChanged)
     def _on_sof0_selection_changed(self, event: TextArea.SelectionChanged) -> None:
         if event.text_area.id != "sof0-struct-edit":
             return
         self._update_sof0_active_highlight()
-        if self.sof0_segment_info and self.sof0_preview_payload is not None:
-            _, _, length_field, _ = self.sof0_segment_info
-            self._render_sof0_views(self.sof0_segment_info[0], length_field, self.sof0_preview_payload)
+        try:
+            if self.sof0_segment_info and self.sof0_preview_payload is not None:
+                _, _, length_field, _ = self.sof0_segment_info
+                self._render_sof0_views(self.sof0_segment_info[0], length_field, self.sof0_preview_payload)
+        except QUERY_ERRORS:
+            return
 
     @on(TextArea.Changed)
     def _on_dri_textarea_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id not in {"dri-struct-edit", "dri-raw-hex"}:
             return
-        if not self.query_one("#dri-manual-length", Checkbox).value:
-            try:
-                payload = self._build_dri_payload()
-            except Exception:
-                self._mark_dri_dirty(True)
-            else:
-                self.query_one("#dri-length", Input).value = f"{len(payload) + 2:04X}"
-        self._refresh_dri_preview()
+        try:
+            if not self.query_one("#dri-manual-length", Checkbox).value:
+                try:
+                    payload = self._build_dri_payload()
+                except Exception:
+                    self._mark_dri_dirty(True)
+                else:
+                    self.query_one("#dri-length", Input).value = f"{len(payload) + 2:04X}"
+            self._refresh_dri_preview()
+        except QUERY_ERRORS:
+            return
 
     @on(Button.Pressed, "#sof0-save")
     def _on_sof0_save(self) -> None:
@@ -704,9 +749,12 @@ class TuiSegmentsBasicMixin:
     def _on_app0_select_changed(self, event: Select.Changed) -> None:
         if not event.select.id or not event.select.id.startswith("app0-"):
             return
-        self._update_app0_length_field()
-        self._refresh_app0_preview()
-        self._mark_app0_dirty(True)
+        try:
+            self._update_app0_length_field()
+            self._refresh_app0_preview()
+            self._mark_app0_dirty(True)
+        except QUERY_ERRORS:
+            return
 
     def _render_app0_segment(self, data: bytes, segments) -> None:
         """
@@ -744,10 +792,13 @@ class TuiSegmentsBasicMixin:
             app0_log.write(line)
 
     def _render_sof0_segment(self, data: bytes, segments) -> None:
-        left_log = self.query_one("#info-sof0-left", RichLog)
-        frame_log = self.query_one("#info-sof0-frame", RichLog)
-        comps_log = self.query_one("#info-sof0-components", RichLog)
-        tables_log = self.query_one("#info-sof0-tables", RichLog)
+        try:
+            left_log = self.query_one("#info-sof0-left", RichLog)
+            frame_log = self.query_one("#info-sof0-frame", RichLog)
+            comps_log = self.query_one("#info-sof0-components", RichLog)
+            tables_log = self.query_one("#info-sof0-tables", RichLog)
+        except QUERY_ERRORS:
+            return
         for log in (left_log, frame_log, comps_log, tables_log):
             log.clear()
         seg = next((s for s in segments if s.name == "SOF0"), None)
@@ -776,10 +827,13 @@ class TuiSegmentsBasicMixin:
             self._clear_sof0_editor()
 
     def _render_sof_segment_views(self, key: str, seg_name: str, marker: int, data: bytes, seg) -> None:
-        left_log = self.query_one(f"#info-{key}-left", RichLog)
-        frame_log = self.query_one(f"#info-{key}-frame", RichLog)
-        comps_log = self.query_one(f"#info-{key}-components", RichLog)
-        tables_log = self.query_one(f"#info-{key}-tables", RichLog)
+        try:
+            left_log = self.query_one(f"#info-{key}-left", RichLog)
+            frame_log = self.query_one(f"#info-{key}-frame", RichLog)
+            comps_log = self.query_one(f"#info-{key}-components", RichLog)
+            tables_log = self.query_one(f"#info-{key}-tables", RichLog)
+        except QUERY_ERRORS:
+            return
         for log in (left_log, frame_log, comps_log, tables_log):
             log.clear()
         if seg.payload_offset is None or seg.payload_length is None:
@@ -794,10 +848,13 @@ class TuiSegmentsBasicMixin:
     def _render_sof_views_for_key(
         self, key: str, seg_name: str, marker: int, offset: int, length_field: int, payload: bytes
     ) -> None:
-        left_log = self.query_one(f"#info-{key}-left", RichLog)
-        frame_log = self.query_one(f"#info-{key}-frame", RichLog)
-        comps_log = self.query_one(f"#info-{key}-components", RichLog)
-        tables_log = self.query_one(f"#info-{key}-tables", RichLog)
+        try:
+            left_log = self.query_one(f"#info-{key}-left", RichLog)
+            frame_log = self.query_one(f"#info-{key}-frame", RichLog)
+            comps_log = self.query_one(f"#info-{key}-components", RichLog)
+            tables_log = self.query_one(f"#info-{key}-tables", RichLog)
+        except QUERY_ERRORS:
+            return
         for log in (left_log, frame_log, comps_log, tables_log):
             log.clear()
         info = decode_sof0(payload)
@@ -901,9 +958,12 @@ class TuiSegmentsBasicMixin:
         self.sof0_original_payload = None
         self.sof0_preview_payload = None
         self.sof0_active_highlight = None
-        self.query_one("#sof0-raw-hex", TextArea).text = ""
-        self.query_one("#sof0-struct-edit", TextArea).text = ""
-        self.query_one("#sof0-length", Input).value = ""
+        try:
+            self.query_one("#sof0-raw-hex", TextArea).text = ""
+            self.query_one("#sof0-struct-edit", TextArea).text = ""
+            self.query_one("#sof0-length", Input).value = ""
+        except QUERY_ERRORS:
+            return
         self._mark_sof0_dirty(False)
 
     def _set_sof0_editor_values(self, payload: bytes, length_field: int) -> None:
@@ -919,15 +979,21 @@ class TuiSegmentsBasicMixin:
             "height": int(info["height"]),
             "components": decode_sof_components(payload),
         }
-        self.query_one("#sof0-raw-hex", TextArea).text = self._bytes_to_hex(payload)
-        self.query_one("#sof0-struct-edit", TextArea).text = pformat(struct, width=100, sort_dicts=False)
-        self.query_one("#sof0-length", Input).value = f"{length_field:04X}"
+        try:
+            self.query_one("#sof0-raw-hex", TextArea).text = self._bytes_to_hex(payload)
+            self.query_one("#sof0-struct-edit", TextArea).text = pformat(struct, width=100, sort_dicts=False)
+            self.query_one("#sof0-length", Input).value = f"{length_field:04X}"
+        except QUERY_ERRORS:
+            return
         self._update_sof0_active_highlight()
 
     def _render_dri_segment(self, data: bytes, segments) -> None:
-        left_log = self.query_one("#info-dri-left", RichLog)
-        summary_log = self.query_one("#info-dri-summary", RichLog)
-        effect_log = self.query_one("#info-dri-effect", RichLog)
+        try:
+            left_log = self.query_one("#info-dri-left", RichLog)
+            summary_log = self.query_one("#info-dri-summary", RichLog)
+            effect_log = self.query_one("#info-dri-effect", RichLog)
+        except QUERY_ERRORS:
+            return
         for log in (left_log, summary_log, effect_log):
             log.clear()
         seg = next((s for s in segments if s.name == "DRI"), None)
@@ -945,9 +1011,12 @@ class TuiSegmentsBasicMixin:
         self._render_dri_views(seg.offset, seg.length_field or 0, payload)
 
     def _render_dri_views(self, offset: int, length_field: int, payload: bytes) -> None:
-        left_log = self.query_one("#info-dri-left", RichLog)
-        summary_log = self.query_one("#info-dri-summary", RichLog)
-        effect_log = self.query_one("#info-dri-effect", RichLog)
+        try:
+            left_log = self.query_one("#info-dri-left", RichLog)
+            summary_log = self.query_one("#info-dri-summary", RichLog)
+            effect_log = self.query_one("#info-dri-effect", RichLog)
+        except QUERY_ERRORS:
+            return
         for log in (left_log, summary_log, effect_log):
             log.clear()
         info = decode_dri(payload)
@@ -999,17 +1068,23 @@ class TuiSegmentsBasicMixin:
         self.dri_segment_info = None
         self.dri_original_payload = None
         self.dri_preview_payload = None
-        self.query_one("#dri-raw-hex", TextArea).text = ""
-        self.query_one("#dri-struct-edit", TextArea).text = ""
-        self.query_one("#dri-length", Input).value = ""
+        try:
+            self.query_one("#dri-raw-hex", TextArea).text = ""
+            self.query_one("#dri-struct-edit", TextArea).text = ""
+            self.query_one("#dri-length", Input).value = ""
+        except QUERY_ERRORS:
+            return
         self._mark_dri_dirty(False)
 
     def _set_dri_editor_values(self, payload: bytes, length_field: int) -> None:
         info = decode_dri(payload) or {"restart_interval": "0"}
         struct = {"restart_interval": int(info["restart_interval"])}
-        self.query_one("#dri-raw-hex", TextArea).text = self._bytes_to_hex(payload)
-        self.query_one("#dri-struct-edit", TextArea).text = pformat(struct, width=100, sort_dicts=False)
-        self.query_one("#dri-length", Input).value = f"{length_field:04X}"
+        try:
+            self.query_one("#dri-raw-hex", TextArea).text = self._bytes_to_hex(payload)
+            self.query_one("#dri-struct-edit", TextArea).text = pformat(struct, width=100, sort_dicts=False)
+            self.query_one("#dri-length", Input).value = f"{length_field:04X}"
+        except QUERY_ERRORS:
+            return
 
     def _app0_log_header(self, app0_log: RichLog, offset: int, length_field: int, payload_len: int, decoded) -> None:
         app0_log.write(f"APP0 at 0x{offset:08X} length=0x{length_field:04X} payload={payload_len}")
@@ -1086,41 +1161,47 @@ class TuiSegmentsBasicMixin:
         """
         Populate APP0 editor inputs from the current payload.
         """
-        # Raw hex view
-        self.query_one("#app0-raw-hex", TextArea).text = self._bytes_to_hex(payload)
+        try:
+            # Raw hex view
+            self.query_one("#app0-raw-hex", TextArea).text = self._bytes_to_hex(payload)
 
-        # Simple fields (JFIF header if present)
-        if len(payload) >= 14:
-            ident = payload[:5].decode(errors="ignore")
-            if ident == "JFIF\x00":
-                self.query_one("#app0-ident", Select).value = "JFIF\\0"
-            elif ident == "JFXX\x00":
-                self.query_one("#app0-ident", Select).value = "JFXX\\0"
-            ver_major = payload[5]
-            ver_minor = payload[6]
-            units = payload[7]
-            xden = int.from_bytes(payload[8:10], "big")
-            yden = int.from_bytes(payload[10:12], "big")
-            xthumb = payload[12]
-            ythumb = payload[13]
-            thumb_len = 3 * xthumb * ythumb
-            thumb_bytes = payload[14:14 + thumb_len]
-            self.query_one("#app0-version", Select).value = f"{ver_major}.{ver_minor:02d}"
-            self.query_one("#app0-units", Select).value = str(units)
-            self.query_one("#app0-xden", Input).value = str(xden)
-            self.query_one("#app0-yden", Input).value = str(yden)
-            self.query_one("#app0-xthumb", Input).value = str(xthumb)
-            self.query_one("#app0-ythumb", Input).value = str(ythumb)
-            self.query_one("#app0-thumb-hex", TextArea).text = self._bytes_to_hex(thumb_bytes)
+            # Simple fields (JFIF header if present)
+            if len(payload) >= 14:
+                ident = payload[:5].decode(errors="ignore")
+                if ident == "JFIF\x00":
+                    self.query_one("#app0-ident", Select).value = "JFIF\\0"
+                elif ident == "JFXX\x00":
+                    self.query_one("#app0-ident", Select).value = "JFXX\\0"
+                ver_major = payload[5]
+                ver_minor = payload[6]
+                units = payload[7]
+                xden = int.from_bytes(payload[8:10], "big")
+                yden = int.from_bytes(payload[10:12], "big")
+                xthumb = payload[12]
+                ythumb = payload[13]
+                thumb_len = 3 * xthumb * ythumb
+                thumb_bytes = payload[14:14 + thumb_len]
+                self.query_one("#app0-version", Select).value = f"{ver_major}.{ver_minor:02d}"
+                self.query_one("#app0-units", Select).value = str(units)
+                self.query_one("#app0-xden", Input).value = str(xden)
+                self.query_one("#app0-yden", Input).value = str(yden)
+                self.query_one("#app0-xthumb", Input).value = str(xthumb)
+                self.query_one("#app0-ythumb", Input).value = str(ythumb)
+                self.query_one("#app0-thumb-hex", TextArea).text = self._bytes_to_hex(thumb_bytes)
 
-        self.query_one("#app0-length", Input).value = f"{length_field:04X}"
+            self.query_one("#app0-length", Input).value = f"{length_field:04X}"
+        except QUERY_ERRORS:
+            return
         self._apply_app0_mode_visibility()
 
     def _update_app0_length_field(self) -> None:
         """
         Update the length field if manual length is not enabled.
         """
-        manual = self.query_one("#app0-manual-length", Checkbox).value
+        try:
+            manual = self.query_one("#app0-manual-length", Checkbox).value
+        except QUERY_ERRORS:
+            return
         if manual:
             return
         try:
@@ -1128,7 +1209,10 @@ class TuiSegmentsBasicMixin:
         except Exception:
             return
         length_field = len(payload) + 2
-        self.query_one("#app0-length", Input).value = f"{length_field:04X}"
+        try:
+            self.query_one("#app0-length", Input).value = f"{length_field:04X}"
+        except QUERY_ERRORS:
+            return
 
     def _mark_app0_dirty(self, dirty: bool) -> None:
         """
@@ -1254,7 +1338,10 @@ class TuiSegmentsBasicMixin:
         return out_path
 
     def _app0_save_log(self, out_path: Path, payload: bytes, length_field: int) -> None:
-        log = self.query_one("#info-app0", RichLog)
+        try:
+            log = self.query_one("#info-app0", RichLog)
+        except QUERY_ERRORS:
+            return
         log.write(f"Saved edited file: {out_path}")
         if self.query_one("#app0-manual-length", Checkbox).value:
             expected = len(payload) + 2
@@ -1268,8 +1355,11 @@ class TuiSegmentsBasicMixin:
         if not self.app0_segment_info:
             return
         offset, total_len, _, payload_offset = self.app0_segment_info
-        app0_log = self.query_one("#info-app0", RichLog)
-        err = self.query_one("#app0-edit-error", Static)
+        try:
+            app0_log = self.query_one("#info-app0", RichLog)
+            err = self.query_one("#app0-edit-error", Static)
+        except QUERY_ERRORS:
+            return
         try:
             payload = self._build_app0_payload()
         except Exception as e:

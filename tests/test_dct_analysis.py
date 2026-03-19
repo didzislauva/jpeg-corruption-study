@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from jpeg_fault.core import dct_analysis as da
+from jpeg_fault.core.plugins._shared import dct_heatmap as da
 
 
 def test_crop_and_block_maps_basic() -> None:

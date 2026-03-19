@@ -12,6 +12,9 @@ class MutationContext:
     format: str = "unknown"
     output_dir: str = ""
     debug: bool = False
+    mutation_apply: str = "independent"
+    repeats: int = 1
+    step: int = 1
     params: dict[str, Any] | None = None
     source_bytes: Optional[bytes] = None
     segments: Optional[list[Any]] = None

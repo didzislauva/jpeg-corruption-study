@@ -24,6 +24,7 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
    - Handles byte-stuffing (0xFF 0x00) and restart markers
 
 3. **Mutates bytes in the entropy stream**
+   - Core Mutations currently include `add1`, `sub1`, `flipall`, `ff`, `00`, and `bitflip:<bits>`
    - Supports arithmetic changes (`add1`, `sub1`)
    - Supports direct replacement (`ff`, `00`)
    - Supports bit-flip modes (`bitflip:0,1,3`, `bitflip:msb`, `bitflip:lsb`)
@@ -55,12 +56,15 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 - `jpeg_fault/core/cli.py` — Argument parsing and execution flow
 - `jpeg_fault/core/models.py` — Shared dataclasses (`Segment`, `EntropyRange`)
 - `jpeg_fault/core/jpeg_parse.py` — JPEG parsing and segment decoding helpers
+- `jpeg_fault/core/constants/jpeg.py` — Shared JPEG marker/signature/zigzag constants
+- `jpeg_fault/core/constants/exif.py` — Shared EXIF/TIFF signatures, pointer tags, and type metadata
+- `jpeg_fault/core/constants/icc.py` — Shared ICC profile signatures and APP2 editor field/tag mappings
 - `jpeg_fault/core/report.py` — Rich segment report rendering
 - `jpeg_fault/core/mutate.py` — Mutation logic (independent/cumulative/repeats/step)
 - `jpeg_fault/core/media.py` — GIF generation helpers
 - `jpeg_fault/core/ssim_analysis.py` — SSIM metrics and plotting pipeline
 - `jpeg_fault/core/wave_analysis.py` — Entropy stream wave and sliding-wave charts
-- `jpeg_fault/core/dct_analysis.py` — DC and AC-energy heatmaps from decoded 8x8 DCT blocks
+- `jpeg_fault/core/plugins/_shared/dct_heatmap.py` — shared DC and AC-energy heatmap helpers for decoded DCT blocks
 - `jpeg_fault/core/analysis_types.py` — Analysis plugin contracts, parameter specs, and validation
 - `jpeg_fault/core/analysis_registry.py` — Analysis plugin registry and discovery
 - `jpeg_fault/core/mutation_types.py` — Mutation plugin contracts
@@ -74,7 +78,8 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 
 - Python 3.8+
 - The base CLI/report/mutation path uses only the Python standard library.
-- This repo currently does not ship a pinned dependency manifest such as `requirements.txt` or `pyproject.toml`; optional packages are feature-gated in code.
+- This repo ships a `requirements.txt` with the full optional dependency set used for TUI, charts, GIF output, EXIF editing, and tests.
+- Optional features are still feature-gated in code; the base CLI/report/mutation path does not require third-party packages.
 
 Optional dependencies by feature:
 
@@ -194,6 +199,12 @@ Current built-in plugin example:
 - `dc_heatmap` analysis plugin
 - `ac_energy_heatmap` analysis plugin
 
+Built-in mutation plugin examples:
+
+- `55` mutation plugin: writes independent outputs that replace sampled entropy bytes with `0x55`
+- `aa` mutation plugin: writes independent outputs that replace sampled entropy bytes with `0xAA`
+- both are also exposed as TUI plugin tabs under `Plugin Mutations`
+
 The legacy built-in wave options are still available:
 
 - `--wave-chart`
@@ -305,6 +316,22 @@ Mutation plugins use the parallel CLI surface:
   --mutation-plugin-param some_plugin_id.example=value
 ```
 
+The built-in `55` and `aa` mutation plugins currently support:
+
+- `sample`: number of entropy-byte offsets to sample (`0` means all)
+- `seed`: random seed for offset selection
+
+Example:
+
+```bash
+./jpg_fault_tolerance.py gradient.jpg \
+  --mutation-plugin 55,aa \
+  --mutation-plugin-param 55.sample=10 \
+  --mutation-plugin-param 55.seed=7 \
+  --mutation-plugin-param aa.sample=10 \
+  --mutation-plugin-param aa.seed=11
+```
+
 Plugin contracts are now more isolated than before:
 
 - plugins declare typed params
@@ -344,12 +371,14 @@ Plugin contracts are now more isolated than before:
 - In the TUI, AC energy heatmap is launched from the `Graphic Output` plugin tab rather than a dedicated field in the `Outputs` panel.
 - `--dc-heatmap` now dispatches internally through the `dc_heatmap` analysis plugin.
 - `--ac-energy-heatmap` now dispatches internally through the `ac_energy_heatmap` analysis plugin.
+- APP1 and APP2 edited-file saves now reuse the same segment-rewrite helper path as SOF0/DRI/DQT/DHT.
+- DHT live preview now goes through the shared keyed-preview helper while still tolerating temporary odd-length raw-hex input with a warning.
 - Current focused TUI/plugin test slices pass under `../env/bin/pytest`.
 
 ## What Still Needs Work
 
 - The TUI is still the highest-maintenance part of the repo and remains the main refactor target.
-- Large editor/workspace mixins still contain repeated save/preview/mode-switch mechanics.
+- Large editor/workspace mixins still contain repeated decode/edit-state plumbing, especially in APP1/APP2.
 - Plugin coverage is still narrow; the framework is now stronger, but only a small amount of real plugin functionality has been migrated onto it so far.
 - More runtime-oriented TUI tests would still be valuable beyond the current fake-widget coverage.
 

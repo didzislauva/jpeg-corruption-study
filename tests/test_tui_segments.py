@@ -19,6 +19,29 @@ from tests.tui_test_helpers import (
     segment_by_name,
     workspace_widgets,
 )
+from jpeg_fault.core.tui import segments_appn as appn_module
+
+
+def _build_test_app2_payload() -> bytes:
+    header = bytearray(128)
+    size = 128 + 4 + 12 + 4
+    header[0:4] = size.to_bytes(4, "big")
+    header[4:8] = b"TEST"
+    header[8:12] = (0x04300000).to_bytes(4, "big")
+    header[12:16] = b"mntr"
+    header[16:20] = b"RGB "
+    header[20:24] = b"XYZ "
+    header[24:26] = (2024).to_bytes(2, "big")
+    header[26:28] = (1).to_bytes(2, "big")
+    header[28:30] = (2).to_bytes(2, "big")
+    header[30:32] = (3).to_bytes(2, "big")
+    header[32:34] = (4).to_bytes(2, "big")
+    header[34:36] = (5).to_bytes(2, "big")
+    header[36:40] = b"acsp"
+    tag_table = bytearray()
+    tag_table += (1).to_bytes(4, "big")
+    tag_table += b"desc" + (128 + 4 + 12).to_bytes(4, "big") + (4).to_bytes(4, "big")
+    return b"ICC_PROFILE\x00" + bytes([1, 1]) + bytes(header) + bytes(tag_table) + b"DATA"
 
 
 def test_tui_compose_smoke() -> None:
@@ -38,6 +61,74 @@ def test_render_sof0_workspace(rich_jpeg_bytes: bytes) -> None:
     assert "Width: 8" in widgets["#info-sof0-frame"].text
     assert "Component 1 (Y / luma)" in widgets["#info-sof0-components"].text
     assert "Quantization table id=0" in widgets["#info-sof0-tables"].text
+
+
+def test_render_sof0_segment_ignores_missing_mounted_tabs(rich_jpeg_bytes: bytes) -> None:
+    app = JpegFaultTui()
+    widgets = {"#info-sof0-left": FakeLog()}
+    install_query(app, widgets)
+
+    app._render_sof0_segment(rich_jpeg_bytes, jp.parse_jpeg(rich_jpeg_bytes)[0])
+
+    assert widgets["#info-sof0-left"].text == ""
+
+
+def test_sof0_length_change_ignores_missing_manual_length_checkbox() -> None:
+    app = JpegFaultTui()
+    calls: list[bool] = []
+    app._mark_sof0_dirty = lambda dirty: calls.append(dirty)  # type: ignore[assignment]
+    install_query(app, {})
+
+    class DummyInput:
+        id = "sof0-length"
+
+    class DummyEvent:
+        input = DummyInput()
+
+    app._on_sof0_input_changed(DummyEvent())
+
+    assert calls == [True]
+
+
+def test_dqt_length_change_ignores_missing_manual_length_checkbox() -> None:
+    app = JpegFaultTui()
+    calls: list[tuple[str, bool]] = []
+    app._set_dqt_dirty = lambda key, dirty: calls.append((key, dirty))  # type: ignore[assignment]
+    install_query(app, {})
+
+    class DummyInput:
+        id = "dqt-0000117A-length"
+
+    class DummyEvent:
+        input = DummyInput()
+
+    app._on_dqt_input_changed(DummyEvent())
+
+    assert calls == [("dqt-0000117A", True)]
+
+
+def test_dqt_textarea_change_ignores_missing_widgets() -> None:
+    app = JpegFaultTui()
+    calls: list[tuple[str, bool]] = []
+    app._set_dqt_dirty = lambda key, dirty: calls.append((key, dirty))  # type: ignore[assignment]
+    install_query(app, {})
+
+    class DummyTextArea:
+        id = "dqt-0000117A-grid-edit"
+
+    class DummyEvent:
+        text_area = DummyTextArea()
+
+    app._on_dqt_textarea_changed(DummyEvent())
+
+    assert calls == []
+
+
+def test_set_dqt_editor_values_ignores_missing_editor_widgets() -> None:
+    app = JpegFaultTui()
+    install_query(app, {})
+
+    app._set_dqt_editor_values("dqt-000077BC", bytes([0x00] + [0x01] * 64), 67)
 
 
 def test_render_dri_workspace(rich_jpeg_bytes: bytes) -> None:
@@ -381,6 +472,105 @@ def test_dht_raw_hex_edit_updates_preview(rich_jpeg_bytes: bytes) -> None:
     app._on_dht_textarea_changed(DummyEvent(f"{key}-raw-hex"))
 
     assert app.dht_preview_payload[key] == raw_payload
+
+
+def test_dht_lenient_preview_shows_warning_for_odd_length_raw_hex() -> None:
+    app = JpegFaultTui()
+    key = "dht-00000000"
+    app.dht_segment_info[key] = (0, 0, 0, 0)
+    widgets = workspace_widgets(key, ["tables", "counts", "symbols", "usage", "codes"], "table-edit")
+    widgets[f"#{key}-advanced-mode"].value = True
+    widgets[f"#{key}-raw-hex"].text = "00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 2"
+    install_query(app, widgets)
+
+    app._refresh_dht_preview(key)
+
+    assert widgets[f"#{key}-error"].text.startswith("Warning:")
+    assert app.dht_preview_payload[key] == bytes([0x00] + [0, 1] + [0] * 14)
+
+
+def test_app1_save_uses_shared_segment_write_and_log(
+    monkeypatch: pytest.MonkeyPatch, rich_jpeg_path: Path, rich_jpeg_bytes: bytes
+) -> None:
+    class StubPiexif:
+        @staticmethod
+        def dump(_data):
+            return b"II*\x00\x08\x00\x00\x00\x00\x00\x00\x00"
+
+    monkeypatch.setattr(appn_module, "piexif", StubPiexif)
+    app = JpegFaultTui()
+    seg = segment_by_name(rich_jpeg_bytes, "APP0")
+    key = "app1-00000000"
+    app.app1_segment_info[key] = (seg.offset, seg.total_length, seg.length_field or 0, seg.payload_offset or 0)
+    widgets = {
+        "#input-path": FakeInput(str(rich_jpeg_path)),
+        f"#{key}-dict-editor": FakeTextArea("{'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}, 'Interop': {}, 'thumbnail': b''}"),
+        f"#{key}-error": FakeStatic(),
+        f"#{key}-save": FakeButton(False),
+        f"#info-{key}-raw": FakeLog(),
+    }
+    install_query(app, widgets)
+
+    class DummyButton:
+        id = f"{key}-save"
+
+    class DummyEvent:
+        button = DummyButton()
+
+    app._on_app1_save(DummyEvent())
+
+    saved_path = Path(widgets[f"#info-{key}-raw"].text.split(": ", 1)[1])
+    saved_bytes = saved_path.read_bytes()
+    out_seg = segment_by_name(saved_bytes, "APP0")
+    assert saved_path.exists()
+    assert saved_path.name.endswith("_app1_edit.jpg")
+    assert saved_bytes[out_seg.payload_offset:out_seg.payload_offset + out_seg.payload_length].startswith(b"Exif\x00\x00")
+    assert widgets[f"#{key}-save"].disabled is True
+
+
+def test_app2_save_uses_shared_segment_write_and_log(
+    rich_jpeg_path: Path, rich_jpeg_bytes: bytes
+) -> None:
+    app = JpegFaultTui()
+    seg = segment_by_name(rich_jpeg_bytes, "APP0")
+    key = "app2-00000000"
+    app.app2_segment_info[key] = (seg.offset, seg.total_length, seg.length_field or 0, seg.payload_offset or 0)
+    app.app2_original_payload[key] = _build_test_app2_payload()
+    widgets = {
+        "#input-path": FakeInput(str(rich_jpeg_path)),
+        f"#{key}-desc-input": FakeInput("Updated profile"),
+        f"#{key}-cprt-input": FakeInput(""),
+        f"#{key}-dmnd-input": FakeInput(""),
+        f"#{key}-dmdd-input": FakeInput(""),
+        f"#{key}-wtpt-input": FakeInput(""),
+        f"#{key}-bkpt-input": FakeInput(""),
+        f"#{key}-rxyz-input": FakeInput(""),
+        f"#{key}-gxyz-input": FakeInput(""),
+        f"#{key}-bxyz-input": FakeInput(""),
+        f"#{key}-rtrc-input": FakeInput(""),
+        f"#{key}-gtrc-input": FakeInput(""),
+        f"#{key}-btrc-input": FakeInput(""),
+        f"#{key}-error": FakeStatic(),
+        f"#{key}-save": FakeButton(False),
+        f"#info-{key}-raw": FakeLog(),
+    }
+    install_query(app, widgets)
+
+    class DummyButton:
+        id = f"{key}-save"
+
+    class DummyEvent:
+        button = DummyButton()
+
+    app._on_app2_save(DummyEvent())
+
+    saved_path = Path(widgets[f"#info-{key}-raw"].text.split(": ", 1)[1])
+    saved_bytes = saved_path.read_bytes()
+    out_seg = segment_by_name(saved_bytes, "APP0")
+    assert saved_path.exists()
+    assert saved_path.name.endswith("_app2_edit.jpg")
+    assert saved_bytes[out_seg.payload_offset:out_seg.payload_offset + out_seg.payload_length].startswith(b"ICC_PROFILE\x00")
+    assert widgets[f"#{key}-save"].disabled is True
 
 
 @pytest.mark.parametrize(

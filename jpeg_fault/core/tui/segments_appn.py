@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 from pprint import pformat
+from types import SimpleNamespace
 from typing import Optional, Tuple
 
 try:
@@ -12,6 +13,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches, WrongType
 from textual.widgets import (
     Button,
     Checkbox,
@@ -26,7 +28,12 @@ from textual.widgets import (
 )
 from rich.text import Text
 
-from .jpeg_parse import decode_app0
+from ..constants.exif import EXIF_POINTER_TAGS, EXIF_REQUIRED_IFD_KEYS, EXIF_SIGNATURE, EXIF_TYPE_NAMES, EXIF_TYPE_SIZES, TIFF_MAGIC
+from ..constants.icc import ICC_EDITABLE_FIELDS, ICC_GAMMA_TAG_FIELDS, ICC_PROFILE_SIGNATURE, ICC_TEXT_TAG_FIELDS, ICC_XYZ_TAG_FIELDS
+from ..jpeg_parse import decode_app0
+
+
+QUERY_ERRORS = (NoMatches, WrongType, AssertionError)
 
 
 class TuiSegmentsAppnMixin:
@@ -83,17 +90,26 @@ class TuiSegmentsAppnMixin:
     def _on_app1_textarea_changed(self, event: TextArea.Changed) -> None:
         key = self._app1_key_from_id(event.text_area.id, "-header-hex")
         if key:
-            self._on_app1_header_hex_changed(key)
+            try:
+                self._on_app1_header_hex_changed(key)
+            except QUERY_ERRORS:
+                return
             self._set_app1_dirty(key, True)
             return
         key = self._app1_key_from_id(event.text_area.id, "-ifd0-editor")
         if key:
-            self._sync_ifd_editor_to_dict(key, "0th")
+            try:
+                self._sync_ifd_editor_to_dict(key, "0th")
+            except QUERY_ERRORS:
+                return
             self._set_app1_dirty(key, True)
             return
         key = self._app1_key_from_id(event.text_area.id, "-ifd1-editor")
         if key:
-            self._sync_ifd_editor_to_dict(key, "1st")
+            try:
+                self._sync_ifd_editor_to_dict(key, "1st")
+            except QUERY_ERRORS:
+                return
             self._set_app1_dirty(key, True)
             return
         key = self._app1_key_from_id(event.text_area.id, "-dict-editor")
@@ -106,7 +122,10 @@ class TuiSegmentsAppnMixin:
         key = self._app1_key_from_id(event.button.id, "-save")
         if not key:
             return
-        err = self.query_one(f"#{key}-error", Static)
+        try:
+            err = self.query_one(f"#{key}-error", Static)
+        except QUERY_ERRORS:
+            return
         err.update("")
         try:
             input_path, payload = self._app1_save_inputs(key)
@@ -114,8 +133,7 @@ class TuiSegmentsAppnMixin:
             err.update(f"Error: {e}")
             return
         out_path = self._app1_write_file(input_path, key, payload)
-        log = self.query_one(f"#info-{key}", RichLog)
-        log.write(f"Saved edited file: {out_path}")
+        self._app1_save_log(key, out_path, payload)
         self._set_app1_dirty(key, False)
 
     @on(Select.Changed)
@@ -123,56 +141,42 @@ class TuiSegmentsAppnMixin:
         key = self._app2_key_from_id(event.select.id, "-desc-preset")
         if key:
             val = event.select.value
-            self.query_one(f"#{key}-desc-input", Input).value = val or ""
+            try:
+                self.query_one(f"#{key}-desc-input", Input).value = val or ""
+            except QUERY_ERRORS:
+                return
             self._set_app2_dirty(key, True)
             return
         key = self._app2_key_from_id(event.select.id, "-cprt-preset")
         if key:
             val = event.select.value
-            self.query_one(f"#{key}-cprt-input", Input).value = val or ""
+            try:
+                self.query_one(f"#{key}-cprt-input", Input).value = val or ""
+            except QUERY_ERRORS:
+                return
             self._set_app2_dirty(key, True)
             return
 
     @on(Input.Changed)
     def _on_app2_input_changed(self, event: Input.Changed) -> None:
-        key = self._app2_key_from_id(event.input.id, "-desc-input")
-        if key:
-            self._refresh_app2_preview(key)
-            return
-        key = self._app2_key_from_id(event.input.id, "-cprt-input")
-        if key:
-            self._refresh_app2_preview(key)
-            return
-        key = self._app2_key_from_id(event.input.id, "-dmnd-input")
-        if key:
-            self._refresh_app2_preview(key)
-            return
-        key = self._app2_key_from_id(event.input.id, "-dmdd-input")
-        if key:
-            self._refresh_app2_preview(key)
-            return
-        for suffix in [
-            "-wtpt-input",
-            "-bkpt-input",
-            "-rxyz-input",
-            "-gxyz-input",
-            "-bxyz-input",
-            "-rtrc-input",
-            "-gtrc-input",
-            "-btrc-input",
-        ]:
+        for suffix in self._app2_input_suffixes():
             key = self._app2_key_from_id(event.input.id, suffix)
             if key:
-                self._refresh_app2_preview(key)
+                try:
+                    self._refresh_app2_preview(key)
+                except QUERY_ERRORS:
+                    return
                 return
-            return
 
     @on(Button.Pressed)
     def _on_app2_save(self, event: Button.Pressed) -> None:
         key = self._app2_key_from_id(event.button.id, "-save")
         if not key:
             return
-        err = self.query_one(f"#{key}-error", Static)
+        try:
+            err = self.query_one(f"#{key}-error", Static)
+        except QUERY_ERRORS:
+            return
         err.update("")
         try:
             input_path, payload = self._app2_save_inputs(key)
@@ -180,7 +184,7 @@ class TuiSegmentsAppnMixin:
             err.update(f"Error: {e}")
             return
         out_path = self._app2_write_file(input_path, key, payload)
-        self.query_one(f"#info-{key}-raw", RichLog).write(f"Saved edited file: {out_path}")
+        self._app2_save_log(key, out_path, payload)
         self._set_app2_dirty(key, False)
 
     def _reset_appn_tabs(self, segments) -> list[Tuple[str, object]]:
@@ -198,7 +202,7 @@ class TuiSegmentsAppnMixin:
         targets: list[Tuple[str, object]] = []
         has_app0 = any(seg.name == "APP0" for seg in segments)
         if has_app0:
-            pane = TabPane("APP0", self._build_app0_pane())
+            pane = TabPane("APP0", self._build_app0_pane(), id=self._dynamic_pane_id("appn-pane-app0"))
             appn_tabs.add_pane(pane)
             first_pane_id = pane.id
             self._apply_app0_mode_visibility()
@@ -211,7 +215,7 @@ class TuiSegmentsAppnMixin:
             label = seg.name if counts[seg.name] == 1 else f"{seg.name} #{counts[seg.name]}"
             if seg.name == "APP1":
                 key = f"app1-{seg.offset:08X}"
-                pane = TabPane(label, self._build_app1_pane(key, label))
+                pane = TabPane(label, self._build_app1_pane(key, label), id=self._dynamic_pane_id(f"appn-pane-{key}"))
                 appn_tabs.add_pane(pane)
                 if first_pane_id is None:
                     first_pane_id = pane.id
@@ -219,7 +223,7 @@ class TuiSegmentsAppnMixin:
                 targets.append((key, seg))
             elif seg.name == "APP2":
                 key = f"app2-{seg.offset:08X}"
-                pane = TabPane(label, self._build_app2_pane(key, label))
+                pane = TabPane(label, self._build_app2_pane(key, label), id=self._dynamic_pane_id(f"appn-pane-{key}"))
                 appn_tabs.add_pane(pane)
                 if first_pane_id is None:
                     first_pane_id = pane.id
@@ -227,13 +231,13 @@ class TuiSegmentsAppnMixin:
                 targets.append((key, seg))
             else:
                 log_id = f"info-appn-{seg.offset}"
-                pane = TabPane(label, self._build_appn_readonly_pane(label, log_id))
+                pane = TabPane(label, self._build_appn_readonly_pane(label, log_id), id=self._dynamic_pane_id(f"appn-pane-{seg.offset:08X}"))
                 appn_tabs.add_pane(pane)
                 if first_pane_id is None:
                     first_pane_id = pane.id
                 targets.append((log_id, seg))
         if first_pane_id is None:
-            pane = TabPane("APPn", RichLog(id="info-appn-empty", highlight=True))
+            pane = TabPane("APPn", RichLog(id="info-appn-empty", highlight=True), id=self._dynamic_pane_id("appn-pane-empty"))
             appn_tabs.add_pane(pane)
             first_pane_id = pane.id
             self.query_one("#info-appn-empty", RichLog).write("No APPn segments found.")
@@ -249,7 +253,10 @@ class TuiSegmentsAppnMixin:
             if key.startswith("app2-"):
                 self._render_app2_segment(data, seg, key)
                 continue
-            log = self.query_one(f"#{key}", RichLog)
+            try:
+                log = self.query_one(f"#{key}", RichLog)
+            except QUERY_ERRORS:
+                continue
             log.clear()
             self._render_appn_segment(data, seg, log)
 
@@ -278,9 +285,9 @@ class TuiSegmentsAppnMixin:
     def _init_app1_tabs(self, key: str) -> None:
         tabs = self.query_one(f"#{key}-tabs", TabbedContent)
         tabs.clear_panes()
-        tabs.add_pane(TabPane("Raw", RichLog(id=f"info-{key}-raw", highlight=True)))
-        tabs.add_pane(TabPane("Hex", RichLog(id=f"info-{key}-hex", highlight=True)))
-        tabs.add_pane(TabPane("Table", RichLog(id=f"info-{key}-table", highlight=True)))
+        tabs.add_pane(TabPane("Raw", RichLog(id=f"info-{key}-raw", highlight=True), id=self._dynamic_pane_id(f"{key}-pane-raw")))
+        tabs.add_pane(TabPane("Hex", RichLog(id=f"info-{key}-hex", highlight=True), id=self._dynamic_pane_id(f"{key}-pane-hex")))
+        tabs.add_pane(TabPane("Table", RichLog(id=f"info-{key}-table", highlight=True), id=self._dynamic_pane_id(f"{key}-pane-table")))
         edit_tabs = self.query_one(f"#{key}-edit-tabs", TabbedContent)
         edit_tabs.clear_panes()
         edit_tabs.add_pane(
@@ -292,29 +299,30 @@ class TuiSegmentsAppnMixin:
                     Static("Decoded header", classes="field"),
                     RichLog(id=f"{key}-header", highlight=True),
                 ),
+                id=self._dynamic_pane_id(f"{key}-edit-pane-header"),
             )
         )
         edit_tabs.add_pane(
-            TabPane("IFD0", TextArea("", id=f"{key}-ifd0-editor", soft_wrap=True, show_line_numbers=True))
+            TabPane("IFD0", TextArea("", id=f"{key}-ifd0-editor", soft_wrap=True, show_line_numbers=True), id=self._dynamic_pane_id(f"{key}-edit-pane-ifd0"))
         )
         edit_tabs.add_pane(
-            TabPane("IFD1", TextArea("", id=f"{key}-ifd1-editor", soft_wrap=True, show_line_numbers=True))
+            TabPane("IFD1", TextArea("", id=f"{key}-ifd1-editor", soft_wrap=True, show_line_numbers=True), id=self._dynamic_pane_id(f"{key}-edit-pane-ifd1"))
         )
         edit_tabs.add_pane(
-            TabPane("Dict", TextArea("", id=f"{key}-dict-editor", soft_wrap=True, show_line_numbers=True))
+            TabPane("Dict", TextArea("", id=f"{key}-dict-editor", soft_wrap=True, show_line_numbers=True), id=self._dynamic_pane_id(f"{key}-edit-pane-dict"))
         )
 
     def _init_app2_tabs(self, key: str) -> None:
         tabs = self.query_one(f"#{key}-tabs", TabbedContent)
         tabs.clear_panes()
-        tabs.add_pane(TabPane("Raw", RichLog(id=f"info-{key}-raw", highlight=True)))
-        tabs.add_pane(TabPane("Hex", RichLog(id=f"info-{key}-hex", highlight=True)))
-        tabs.add_pane(TabPane("Table", RichLog(id=f"info-{key}-table", highlight=True)))
+        tabs.add_pane(TabPane("Raw", RichLog(id=f"info-{key}-raw", highlight=True), id=self._dynamic_pane_id(f"{key}-pane-raw")))
+        tabs.add_pane(TabPane("Hex", RichLog(id=f"info-{key}-hex", highlight=True), id=self._dynamic_pane_id(f"{key}-pane-hex")))
+        tabs.add_pane(TabPane("Table", RichLog(id=f"info-{key}-table", highlight=True), id=self._dynamic_pane_id(f"{key}-pane-table")))
         right = self.query_one(f"#{key}-right-tabs", TabbedContent)
         right.clear_panes()
-        right.add_pane(TabPane("Header", RichLog(id=f"{key}-header", highlight=True)))
-        right.add_pane(TabPane("Tags", RichLog(id=f"{key}-tags", highlight=True)))
-        right.add_pane(TabPane("Tag Table", RichLog(id=f"{key}-tag-table", highlight=True)))
+        right.add_pane(TabPane("Header", RichLog(id=f"{key}-header", highlight=True), id=self._dynamic_pane_id(f"{key}-right-pane-header")))
+        right.add_pane(TabPane("Tags", RichLog(id=f"{key}-tags", highlight=True), id=self._dynamic_pane_id(f"{key}-right-pane-tags")))
+        right.add_pane(TabPane("Tag Table", RichLog(id=f"{key}-tag-table", highlight=True), id=self._dynamic_pane_id(f"{key}-right-pane-tag-table")))
         right.add_pane(
             TabPane(
                 "Edit",
@@ -362,19 +370,23 @@ class TuiSegmentsAppnMixin:
                     Button("Save ICC edited file", id=f"{key}-save", variant="success", disabled=True),
                     Static("", id=f"{key}-error"),
                 ),
+                id=self._dynamic_pane_id(f"{key}-right-pane-edit"),
             )
         )
 
     def _render_app1_segment(self, data: bytes, seg, key: str) -> None:
-        log_hex = self.query_one(f"#info-{key}-hex", RichLog)
-        log_raw = self.query_one(f"#info-{key}-raw", RichLog)
-        log_table = self.query_one(f"#info-{key}-table", RichLog)
-        err = self.query_one(f"#{key}-error", Static)
-        header = self.query_one(f"#{key}-header", RichLog)
-        header_hex = self.query_one(f"#{key}-header-hex", TextArea)
-        ifd0_editor = self.query_one(f"#{key}-ifd0-editor", TextArea)
-        ifd1_editor = self.query_one(f"#{key}-ifd1-editor", TextArea)
-        dict_editor = self.query_one(f"#{key}-dict-editor", TextArea)
+        try:
+            log_hex = self.query_one(f"#info-{key}-hex", RichLog)
+            log_raw = self.query_one(f"#info-{key}-raw", RichLog)
+            log_table = self.query_one(f"#info-{key}-table", RichLog)
+            err = self.query_one(f"#{key}-error", Static)
+            header = self.query_one(f"#{key}-header", RichLog)
+            header_hex = self.query_one(f"#{key}-header-hex", TextArea)
+            ifd0_editor = self.query_one(f"#{key}-ifd0-editor", TextArea)
+            ifd1_editor = self.query_one(f"#{key}-ifd1-editor", TextArea)
+            dict_editor = self.query_one(f"#{key}-dict-editor", TextArea)
+        except QUERY_ERRORS:
+            return
         log_hex.clear()
         log_raw.clear()
         log_table.clear()
@@ -393,7 +405,7 @@ class TuiSegmentsAppnMixin:
         self.app1_original_payload[key] = payload
         self.app1_preview_payload[key] = payload
         header_hex.text = self._bytes_to_hex(payload[:14])
-        if not payload.startswith(b"Exif\x00\x00"):
+        if not payload.startswith(EXIF_SIGNATURE):
             log_hex.write("APP1 payload is not EXIF (missing Exif\\0\\0 header).")
             log_table.write("APP1 payload is not EXIF.")
             self._render_app1_hex(log_hex, data, seg, [])
@@ -429,15 +441,18 @@ class TuiSegmentsAppnMixin:
         self._set_app1_dirty(key, False)
 
     def _render_app2_segment(self, data: bytes, seg, key: str) -> None:
-        log_hex = self.query_one(f"#info-{key}-hex", RichLog)
-        log_raw = self.query_one(f"#info-{key}-raw", RichLog)
-        log_table = self.query_one(f"#info-{key}-table", RichLog)
-        log_header = self.query_one(f"#{key}-header", RichLog)
-        log_tags = self.query_one(f"#{key}-tags", RichLog)
-        log_table2 = self.query_one(f"#{key}-tag-table", RichLog)
-        err = self.query_one(f"#{key}-error", Static)
-        desc_input = self.query_one(f"#{key}-desc-input", Input)
-        cprt_input = self.query_one(f"#{key}-cprt-input", Input)
+        try:
+            log_hex = self.query_one(f"#info-{key}-hex", RichLog)
+            log_raw = self.query_one(f"#info-{key}-raw", RichLog)
+            log_table = self.query_one(f"#info-{key}-table", RichLog)
+            log_header = self.query_one(f"#{key}-header", RichLog)
+            log_tags = self.query_one(f"#{key}-tags", RichLog)
+            log_table2 = self.query_one(f"#{key}-tag-table", RichLog)
+            err = self.query_one(f"#{key}-error", Static)
+            desc_input = self.query_one(f"#{key}-desc-input", Input)
+            cprt_input = self.query_one(f"#{key}-cprt-input", Input)
+        except QUERY_ERRORS:
+            return
         log_hex.clear()
         log_raw.clear()
         log_table.clear()
@@ -466,21 +481,12 @@ class TuiSegmentsAppnMixin:
         self._render_icc_hex_sections(log_hex, data, seg, icc, ranges)
         self._render_app2_raw_hex(log_raw, data, seg)
         tag_map = self._icc_tag_data_map(icc, payload)
-        desc_text, desc_type = self._decode_icc_text_tag(tag_map.get("desc"))
-        cprt_text, cprt_type = self._decode_icc_text_tag(tag_map.get("cprt"))
-        desc_input.value = desc_text
-        cprt_input.value = cprt_text
-        self.query_one(f"#{key}-dmnd-input", Input).value = self._decode_icc_ascii(tag_map.get("dmnd"))
-        self.query_one(f"#{key}-dmdd-input", Input).value = self._decode_icc_ascii(tag_map.get("dmdd"))
-        self.query_one(f"#{key}-wtpt-input", Input).value = self._decode_icc_xyz(tag_map.get("wtpt"))
-        self.query_one(f"#{key}-bkpt-input", Input).value = self._decode_icc_xyz(tag_map.get("bkpt"))
-        self.query_one(f"#{key}-rxyz-input", Input).value = self._decode_icc_xyz(tag_map.get("rXYZ"))
-        self.query_one(f"#{key}-gxyz-input", Input).value = self._decode_icc_xyz(tag_map.get("gXYZ"))
-        self.query_one(f"#{key}-bxyz-input", Input).value = self._decode_icc_xyz(tag_map.get("bXYZ"))
-        self.query_one(f"#{key}-rtrc-input", Input).value = self._decode_icc_gamma(tag_map.get("rTRC"))
-        self.query_one(f"#{key}-gtrc-input", Input).value = self._decode_icc_gamma(tag_map.get("gTRC"))
-        self.query_one(f"#{key}-btrc-input", Input).value = self._decode_icc_gamma(tag_map.get("bTRC"))
-        self.app2_tag_types[key] = {"desc": desc_type, "cprt": cprt_type}
+        self._populate_app2_edit_fields(
+            key,
+            tag_map,
+            desc_input=desc_input,
+            cprt_input=cprt_input,
+        )
         self._set_app2_dirty(key, False)
 
     def _render_app1_hex(self, log: RichLog, data: bytes, seg, ranges) -> None:
@@ -600,7 +606,7 @@ class TuiSegmentsAppnMixin:
         )
 
     def _parse_icc_profile(self, payload: bytes, payload_offset: int) -> dict:
-        if not payload.startswith(b"ICC_PROFILE\x00"):
+        if not payload.startswith(ICC_PROFILE_SIGNATURE):
             return {"error": "missing ICC_PROFILE header"}
         if len(payload) < 14:
             return {"error": "truncated ICC header"}
@@ -928,7 +934,10 @@ class TuiSegmentsAppnMixin:
 
     def _set_app1_dirty(self, key: str, dirty: bool) -> None:
         self.app1_dirty[key] = dirty
-        self.query_one(f"#{key}-save", Button).disabled = not dirty
+        try:
+            self.query_one(f"#{key}-save", Button).disabled = not dirty
+        except Exception:
+            return
 
     def _app2_key_from_id(self, widget_id: Optional[str], suffix: str) -> Optional[str]:
         if not widget_id or not widget_id.startswith("app2-") or not widget_id.endswith(suffix):
@@ -1017,7 +1026,7 @@ class TuiSegmentsAppnMixin:
         if endian is None:
             return {"error": "invalid TIFF byte order"}
         magic = self._exif_u16(tiff[2:4], endian)
-        if magic != 0x002A:
+        if magic != TIFF_MAGIC:
             return {"error": f"bad TIFF magic 0x{magic:04X}"}
         ifd0_off = self._exif_u32(tiff[4:8], endian)
         ifds = self._collect_exif_ifds(tiff, tiff_base, endian, ifd0_off)
@@ -1042,15 +1051,15 @@ class TuiSegmentsAppnMixin:
         ifd0 = self._parse_ifd("IFD0", tiff, tiff_base, endian, ifd0_off, seen)
         if ifd0:
             ifds.append(ifd0)
-            self._append_pointer_ifd(ifds, ifd0, "ExifIFD", 0x8769, tiff, tiff_base, endian, seen)
-            self._append_pointer_ifd(ifds, ifd0, "GPSIFD", 0x8825, tiff, tiff_base, endian, seen)
+            self._append_pointer_ifd(ifds, ifd0, "ExifIFD", EXIF_POINTER_TAGS["ExifIFD"], tiff, tiff_base, endian, seen)
+            self._append_pointer_ifd(ifds, ifd0, "GPSIFD", EXIF_POINTER_TAGS["GPSIFD"], tiff, tiff_base, endian, seen)
         if ifd0 and ifd0["next_offset"]:
             ifd1 = self._parse_ifd("IFD1", tiff, tiff_base, endian, ifd0["next_offset"], seen)
             if ifd1:
                 ifds.append(ifd1)
         interop = next((i for i in ifds if i["name"] == "ExifIFD"), None)
         if interop:
-            self._append_pointer_ifd(ifds, interop, "InteropIFD", 0xA005, tiff, tiff_base, endian, seen)
+            self._append_pointer_ifd(ifds, interop, "InteropIFD", EXIF_POINTER_TAGS["InteropIFD"], tiff, tiff_base, endian, seen)
         return ifds
 
     def _append_pointer_ifd(
@@ -1118,19 +1127,10 @@ class TuiSegmentsAppnMixin:
         }
 
     def _exif_type_size(self, typ: int) -> int:
-        return {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8}.get(typ, 0)
+        return EXIF_TYPE_SIZES.get(typ, 0)
 
     def _exif_type_name(self, typ: int) -> str:
-        return {
-            1: "BYTE",
-            2: "ASCII",
-            3: "SHORT",
-            4: "LONG",
-            5: "RATIONAL",
-            7: "UNDEFINED",
-            9: "SLONG",
-            10: "SRATIONAL",
-        }.get(typ, f"TYPE{typ}")
+        return EXIF_TYPE_NAMES.get(typ, f"TYPE{typ}")
 
     def _exif_value_preview(
         self, tiff: bytes, tiff_base: int, value_offset: int, value_len: int, typ: int, endian: str
@@ -1199,6 +1199,9 @@ class TuiSegmentsAppnMixin:
             return None
         return widget_id[: -len(suffix)]
 
+    def _app2_input_suffixes(self) -> tuple[str, ...]:
+        return tuple(f"-{field}-input" for field in ICC_EDITABLE_FIELDS)
+
     def _app1_save_inputs(self, key: str) -> Tuple[str, bytes]:
         input_path = self.query_one("#input-path", Input).value.strip()
         if not input_path:
@@ -1212,7 +1215,7 @@ class TuiSegmentsAppnMixin:
             raise ValueError("EXIF editor is empty.")
         exif_dict = self._app1_parse_exif_dict(text)
         exif_bytes = piexif.dump(exif_dict)
-        payload = b"Exif\x00\x00" + exif_bytes
+        payload = EXIF_SIGNATURE + exif_bytes
         if len(payload) + 2 > 0xFFFF:
             raise ValueError("EXIF payload too large for APP1.")
         return input_path, payload
@@ -1224,7 +1227,7 @@ class TuiSegmentsAppnMixin:
             raise ValueError(f"Invalid EXIF dict: {e}")
         if not isinstance(data, dict):
             raise ValueError("EXIF editor must be a dict.")
-        for key in ["0th", "Exif", "GPS", "1st", "Interop"]:
+        for key in EXIF_REQUIRED_IFD_KEYS:
             if key not in data:
                 data[key] = {}
             if not isinstance(data[key], dict):
@@ -1237,18 +1240,22 @@ class TuiSegmentsAppnMixin:
 
     def _app1_write_file(self, input_path: str, key: str, payload: bytes) -> Path:
         offset, total_len, _, _ = self.app1_segment_info[key]
-        data = Path(input_path).read_bytes()
-        marker = data[offset:offset + 2]
-        length_field = len(payload) + 2
-        new_seg = marker + length_field.to_bytes(2, "big") + payload
-        new_data = data[:offset] + new_seg + data[offset + total_len:]
-        out_path = Path(input_path).with_name(Path(input_path).stem + "_app1_edit.jpg")
-        idx = 1
-        while out_path.exists():
-            out_path = Path(input_path).with_name(Path(input_path).stem + f"_app1_edit_{idx}.jpg")
-            idx += 1
-        out_path.write_bytes(new_data)
-        return out_path
+        return self._write_segment_edit_file(
+            input_path=input_path,
+            offset=offset,
+            total_len=total_len,
+            payload=payload,
+            length_field=len(payload) + 2,
+            suffix="_app1_edit",
+        )
+
+    def _app1_save_log(self, key: str, out_path: Path, payload: bytes) -> None:
+        self._segment_save_log(
+            log_id=f"info-{key}-raw",
+            out_path=out_path,
+            payload=payload,
+            length_field=len(payload) + 2,
+        )
 
     def _app2_save_inputs(self, key: str) -> Tuple[str, bytes]:
         input_path = self.query_one("#input-path", Input).value.strip()
@@ -1261,47 +1268,56 @@ class TuiSegmentsAppnMixin:
         if icc.get("error"):
             raise ValueError(f"ICC parse error: {icc['error']}")
         tag_map = self._icc_tag_data_map(icc, payload)
-        desc = self.query_one(f"#{key}-desc-input", Input).value.strip()
-        cprt = self.query_one(f"#{key}-cprt-input", Input).value.strip()
-        dmnd = self.query_one(f"#{key}-dmnd-input", Input).value.strip()
-        dmdd = self.query_one(f"#{key}-dmdd-input", Input).value.strip()
-        wtpt = self.query_one(f"#{key}-wtpt-input", Input).value.strip()
-        bkpt = self.query_one(f"#{key}-bkpt-input", Input).value.strip()
-        rxyz = self.query_one(f"#{key}-rxyz-input", Input).value.strip()
-        gxyz = self.query_one(f"#{key}-gxyz-input", Input).value.strip()
-        bxyz = self.query_one(f"#{key}-bxyz-input", Input).value.strip()
-        rtrc = self.query_one(f"#{key}-rtrc-input", Input).value.strip()
-        gtrc = self.query_one(f"#{key}-gtrc-input", Input).value.strip()
-        btrc = self.query_one(f"#{key}-btrc-input", Input).value.strip()
-        tag_types = self.app2_tag_types.get(key, {})
-        updates: dict[str, bytes] = {}
-        if desc:
-            updates["desc"] = self._build_icc_text_tag(desc, tag_types.get("desc", "desc") or "desc")
-        if cprt:
-            updates["cprt"] = self._build_icc_text_tag(cprt, tag_types.get("cprt", "text") or "text")
-        if dmnd:
-            updates["dmnd"] = self._build_icc_text_tag(dmnd, "text")
-        if dmdd:
-            updates["dmdd"] = self._build_icc_text_tag(dmdd, "text")
-        if wtpt:
-            updates["wtpt"] = self._build_icc_xyz_tag(wtpt)
-        if bkpt:
-            updates["bkpt"] = self._build_icc_xyz_tag(bkpt)
-        if rxyz:
-            updates["rXYZ"] = self._build_icc_xyz_tag(rxyz)
-        if gxyz:
-            updates["gXYZ"] = self._build_icc_xyz_tag(gxyz)
-        if bxyz:
-            updates["bXYZ"] = self._build_icc_xyz_tag(bxyz)
-        if rtrc:
-            updates["rTRC"] = self._build_icc_gamma_tag(rtrc)
-        if gtrc:
-            updates["gTRC"] = self._build_icc_gamma_tag(gtrc)
-        if btrc:
-            updates["bTRC"] = self._build_icc_gamma_tag(btrc)
+        updates = self._app2_collect_updates(key)
         new_icc = self._rebuild_icc_profile(payload[14:], icc["tags"], tag_map, updates)
-        new_payload = b"ICC_PROFILE\x00" + bytes([1, 1]) + new_icc
+        new_payload = ICC_PROFILE_SIGNATURE + bytes([1, 1]) + new_icc
         return input_path, new_payload
+
+    def _app2_collect_updates(self, key: str) -> dict[str, bytes]:
+        values = self._app2_input_values(key)
+        tag_types = self.app2_tag_types.get(key, {})
+        text_updates = self._app2_text_updates(values, tag_types)
+        xyz_updates = self._app2_xyz_updates(values)
+        gamma_updates = self._app2_gamma_updates(values)
+        return {**text_updates, **xyz_updates, **gamma_updates}
+
+    def _app2_input_values(self, key: str) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for suffix in self._app2_input_suffixes():
+            field = suffix.removeprefix("-").removesuffix("-input")
+            try:
+                values[field] = self.query_one(f"#{key}{suffix}", Input).value.strip()
+            except QUERY_ERRORS:
+                return {}
+        return values
+
+    def _app2_text_updates(self, values: dict[str, str], tag_types: dict[str, str]) -> dict[str, bytes]:
+        updates: dict[str, bytes] = {}
+        for field, tag_sig in ICC_TEXT_TAG_FIELDS.items():
+            if not values[field]:
+                continue
+            if field == "desc":
+                tag_type = tag_types.get("desc", "desc") or "desc"
+            elif field == "cprt":
+                tag_type = tag_types.get("cprt", "text") or "text"
+            else:
+                tag_type = "text"
+            updates[tag_sig] = self._build_icc_text_tag(values[field], tag_type)
+        return updates
+
+    def _app2_xyz_updates(self, values: dict[str, str]) -> dict[str, bytes]:
+        updates: dict[str, bytes] = {}
+        for field, tag_sig in ICC_XYZ_TAG_FIELDS.items():
+            if values[field]:
+                updates[tag_sig] = self._build_icc_xyz_tag(values[field])
+        return updates
+
+    def _app2_gamma_updates(self, values: dict[str, str]) -> dict[str, bytes]:
+        updates: dict[str, bytes] = {}
+        for field, tag_sig in ICC_GAMMA_TAG_FIELDS.items():
+            if values[field]:
+                updates[tag_sig] = self._build_icc_gamma_tag(values[field])
+        return updates
 
     def _rebuild_icc_profile(
         self, icc: bytes, tags: list[dict], tag_map: dict[str, bytes], updates: dict[str, bytes]
@@ -1341,46 +1357,61 @@ class TuiSegmentsAppnMixin:
 
     def _app2_write_file(self, input_path: str, key: str, payload: bytes) -> Path:
         offset, total_len, _, _ = self.app2_segment_info[key]
-        data = Path(input_path).read_bytes()
-        marker = data[offset:offset + 2]
-        length_field = len(payload) + 2
-        new_seg = marker + length_field.to_bytes(2, "big") + payload
-        new_data = data[:offset] + new_seg + data[offset + total_len:]
-        out_path = Path(input_path).with_name(Path(input_path).stem + "_app2_edit.jpg")
-        idx = 1
-        while out_path.exists():
-            out_path = Path(input_path).with_name(Path(input_path).stem + f"_app2_edit_{idx}.jpg")
-            idx += 1
-        out_path.write_bytes(new_data)
-        return out_path
+        return self._write_segment_edit_file(
+            input_path=input_path,
+            offset=offset,
+            total_len=total_len,
+            payload=payload,
+            length_field=len(payload) + 2,
+            suffix="_app2_edit",
+        )
 
     def _refresh_app2_preview(self, key: str) -> None:
-        err = self.query_one(f"#{key}-error", Static)
-        err.update("")
-        try:
-            _, payload = self._app2_save_inputs(key)
-        except Exception as e:
-            err.update(f"Error: {e}")
-            return
+        self._refresh_keyed_segment_preview(
+            key=key,
+            segment_info=self.app2_segment_info,
+            err_id=f"{key}-error",
+            build_payload=self._app2_preview_payload_from_ui,
+            length_from_ui=self._segment_payload_length,
+            set_preview=self._set_app2_preview_payload,
+            render_views=self._render_app2_preview_views,
+            set_dirty=self._set_app2_dirty,
+        )
+
+    def _app2_save_log(self, key: str, out_path: Path, payload: bytes) -> None:
+        self._segment_save_log(
+            log_id=f"info-{key}-raw",
+            out_path=out_path,
+            payload=payload,
+            length_field=len(payload) + 2,
+        )
+
+    def _app2_preview_payload_from_ui(self, key: str) -> bytes:
+        _, payload = self._app2_save_inputs(key)
+        return payload
+
+    def _segment_payload_length(self, _key: str, payload: bytes) -> int:
+        return len(payload) + 2
+
+    def _set_app2_preview_payload(self, key: str, payload: bytes) -> None:
         self.app2_preview_payload[key] = payload
-        seg_info = self.app2_segment_info.get(key)
-        if not seg_info:
-            return
-        seg = self._app2_seg_from_info(seg_info, payload)
-        data = self._app2_preview_data(self.info_data or b"", seg, payload)
+
+    def _render_app2_preview_views(self, key: str, payload: bytes, offset: int, length_field: int) -> None:
+        seg_info = self.app2_segment_info[key]
+        seg = self._segment_shell_from_info(seg_info, payload)
+        data = self._segment_preview_data(self.info_data or b"", seg, payload)
         icc = self._parse_icc_profile(payload, seg.payload_offset)
-        log_hex = self.query_one(f"#info-{key}-hex", RichLog)
-        log_raw = self.query_one(f"#info-{key}-raw", RichLog)
-        log_table = self.query_one(f"#info-{key}-table", RichLog)
-        log_header = self.query_one(f"#{key}-header", RichLog)
-        log_tags = self.query_one(f"#{key}-tags", RichLog)
-        log_table2 = self.query_one(f"#{key}-tag-table", RichLog)
-        log_hex.clear()
-        log_raw.clear()
-        log_table.clear()
-        log_header.clear()
-        log_tags.clear()
-        log_table2.clear()
+        try:
+            log_hex = self.query_one(f"#info-{key}-hex", RichLog)
+            log_raw = self.query_one(f"#info-{key}-raw", RichLog)
+            log_table = self.query_one(f"#info-{key}-table", RichLog)
+            log_header = self.query_one(f"#{key}-header", RichLog)
+            log_tags = self.query_one(f"#{key}-tags", RichLog)
+            log_table2 = self.query_one(f"#{key}-tag-table", RichLog)
+        except QUERY_ERRORS:
+            return
+        for log in (log_hex, log_raw, log_table, log_header, log_tags, log_table2):
+            log.clear()
         if icc.get("error"):
             log_hex.write(f"ICC decode error: {icc['error']}")
             self._render_app2_raw_hex(log_raw, data, seg)
@@ -1393,41 +1424,71 @@ class TuiSegmentsAppnMixin:
         self._write_icc_hex_legend(log_hex)
         self._render_icc_hex_sections(log_hex, data, seg, icc, ranges)
         self._render_app2_raw_hex(log_raw, data, seg)
-        self._set_app2_dirty(key, True)
 
     def _app2_preview_data(self, data: bytes, seg, payload: bytes) -> bytes:
+        return self._segment_preview_data(data, seg, payload)
+
+    def _app2_seg_from_info(self, seg_info: Tuple[int, int, int, int], payload: bytes):
+        return self._segment_shell_from_info(seg_info, payload)
+
+    def _app1_preview_data(self, data: bytes, seg, payload: bytes) -> bytes:
+        return self._segment_preview_data(data, seg, payload)
+
+    def _app1_seg_from_info(self, seg_info: Tuple[int, int, int, int], payload: bytes):
+        return self._segment_shell_from_info(seg_info, payload)
+
+    def _segment_preview_data(self, data: bytes, seg, payload: bytes) -> bytes:
         if not data:
             return payload
         return data[:seg.payload_offset] + payload + data[seg.payload_offset + seg.payload_length:]
 
-    def _app2_seg_from_info(self, seg_info: Tuple[int, int, int, int], payload: bytes):
+    def _segment_shell_from_info(self, seg_info: Tuple[int, int, int, int], payload: bytes):
         offset, total_len, length_field, payload_offset = seg_info
-        seg = type("Seg", (), {})()
-        seg.offset = offset
-        seg.total_length = total_len
-        seg.length_field = length_field
-        seg.payload_offset = payload_offset
-        seg.payload_length = len(payload)
-        return seg
+        return SimpleNamespace(
+            offset=offset,
+            total_length=total_len,
+            length_field=length_field,
+            payload_offset=payload_offset,
+            payload_length=len(payload),
+        )
 
-    def _app1_preview_data(self, data: bytes, seg, payload: bytes) -> bytes:
-        return data[:seg.payload_offset] + payload + data[seg.payload_offset + seg.payload_length:]
-
-    def _app1_seg_from_info(self, seg_info: Tuple[int, int, int, int], payload: bytes):
-        offset, total_len, length_field, payload_offset = seg_info
-        seg = type("Seg", (), {})()
-        seg.offset = offset
-        seg.total_length = total_len
-        seg.length_field = length_field
-        seg.payload_offset = payload_offset
-        seg.payload_length = len(payload)
-        return seg
+    def _populate_app2_edit_fields(
+        self,
+        key: str,
+        tag_map: dict[str, bytes],
+        *,
+        desc_input: Input,
+        cprt_input: Input,
+    ) -> None:
+        desc_text, desc_type = self._decode_icc_text_tag(tag_map.get("desc"))
+        cprt_text, cprt_type = self._decode_icc_text_tag(tag_map.get("cprt"))
+        desc_input.value = desc_text
+        cprt_input.value = cprt_text
+        decoders = {
+            **{field: self._decode_icc_ascii for field in ("dmnd", "dmdd")},
+            **{field: self._decode_icc_xyz for field in ICC_XYZ_TAG_FIELDS},
+            **{field: self._decode_icc_gamma for field in ICC_GAMMA_TAG_FIELDS},
+        }
+        tag_names = {
+            **{field: tag_sig for field, tag_sig in ICC_TEXT_TAG_FIELDS.items() if field in ("dmnd", "dmdd")},
+            **ICC_XYZ_TAG_FIELDS,
+            **ICC_GAMMA_TAG_FIELDS,
+        }
+        for field, decoder in decoders.items():
+            try:
+                self.query_one(f"#{key}-{field}-input", Input).value = decoder(tag_map.get(tag_names[field]))
+            except QUERY_ERRORS:
+                return
+        self.app2_tag_types[key] = {"desc": desc_type, "cprt": cprt_type}
 
     def _on_app1_header_hex_changed(self, key: str) -> None:
         if key not in self.app1_segment_info:
             return
-        err = self.query_one(f"#{key}-error", Static)
-        header_hex = self.query_one(f"#{key}-header-hex", TextArea).text
+        try:
+            err = self.query_one(f"#{key}-error", Static)
+            header_hex = self.query_one(f"#{key}-header-hex", TextArea).text
+        except QUERY_ERRORS:
+            return
         try:
             header = self._parse_hex(header_hex)
         except Exception as e:
@@ -1445,9 +1506,12 @@ class TuiSegmentsAppnMixin:
         self._refresh_app1_hex_preview(key)
 
     def _refresh_app1_hex_preview(self, key: str) -> None:
-        log_hex = self.query_one(f"#info-{key}-hex", RichLog)
-        log_raw = self.query_one(f"#info-{key}-raw", RichLog)
-        header = self.query_one(f"#{key}-header", RichLog)
+        try:
+            log_hex = self.query_one(f"#info-{key}-hex", RichLog)
+            log_raw = self.query_one(f"#info-{key}-raw", RichLog)
+            header = self.query_one(f"#{key}-header", RichLog)
+        except QUERY_ERRORS:
+            return
         log_hex.clear()
         log_raw.clear()
         header.clear()
@@ -1458,7 +1522,7 @@ class TuiSegmentsAppnMixin:
         seg = self._app1_seg_from_info(seg_info, self.app1_preview_payload.get(key, b""))
         payload = self.app1_preview_payload.get(key, b"")
         data = self._app1_preview_data(self.info_data, seg, payload)
-        if not payload.startswith(b"Exif\x00\x00"):
+        if not payload.startswith(EXIF_SIGNATURE):
             log_hex.write("APP1 payload is not EXIF (missing Exif\\0\\0 header).")
             self._render_app1_hex(log_hex, data, seg, self._app1_basic_ranges(seg))
             self._render_app1_raw_hex(log_raw, data, seg, self._app1_basic_ranges(seg))
@@ -1473,4 +1537,3 @@ class TuiSegmentsAppnMixin:
         ranges = self._app1_hex_ranges(seg, exif)
         self._render_app1_hex_sections(log_hex, data, seg, exif, ranges)
         self._render_app1_raw_hex(log_raw, data, seg, ranges, exif)
-

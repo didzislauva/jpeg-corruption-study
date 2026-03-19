@@ -82,25 +82,25 @@ All real logic lives under:
 - [wave_analysis.py](jpeg_fault/core/wave_analysis.py)
   Entropy stream wave charts and sliding-window stream statistics.
 
-- [dct_analysis.py](jpeg_fault/core/dct_analysis.py)
+- [dct_heatmap.py](jpeg_fault/core/plugins/_shared/dct_heatmap.py)
   `8x8` block DCT-based visual analysis on decoded source image luminance.
 
 - [debug.py](jpeg_fault/core/debug.py)
   Minimal debug logger.
 
-- [tui_app.py](jpeg_fault/core/tui_app.py)
+- [tui/app.py](jpeg_fault/core/tui/app.py)
   Main Textual application shell and top-level TUI orchestration.
 
-- [tui_segments_basic.py](jpeg_fault/core/tui_segments_basic.py)
+- [tui/segments_basic.py](jpeg_fault/core/tui/segments_basic.py)
   APP0, SOFn, and DRI TUI workspaces.
 
-- [tui_segments_tables.py](jpeg_fault/core/tui_segments_tables.py)
+- [tui/segments_tables.py](jpeg_fault/core/tui/segments_tables.py)
   DHT and DQT TUI workspaces.
 
-- [tui_segments_appn.py](jpeg_fault/core/tui_segments_appn.py)
+- [tui/segments_appn.py](jpeg_fault/core/tui/segments_appn.py)
   APP1, APP2, and generic APPn TUI workspaces.
 
-- [tui_hex.py](jpeg_fault/core/tui_hex.py)
+- [tui/hex.py](jpeg_fault/core/tui/hex.py)
   Full-file hex pane support.
 
 - [analysis_registry.py](jpeg_fault/core/analysis_registry.py)
@@ -114,15 +114,25 @@ All real logic lives under:
 
 - CLI/API flow is stable.
 - TUI startup is currently working.
+- The real TUI implementation now lives under `jpeg_fault/core/tui/`.
+- The old top-level `tui_*` compatibility modules were removed; imports/tests now target `jpeg_fault.core.tui.*` directly.
 - Plugin panel lifecycle issues in the TUI were fixed in this session.
 - Chart-producing analyses now force matplotlib to the headless `Agg` backend to avoid Tk/thread crashes from TUI workers.
 - The built-in analysis plugins now include `entropy_wave`, `sliding_wave`, `dc_heatmap`, and `ac_energy_heatmap`.
+- The built-in mutation plugins now include `mutation_55` and `mutation_aa`.
 - `dc_heatmap` and `ac_energy_heatmap` now expose `cmap`, `plane_mode`, and `block_size`, and default unnamed outputs to descriptive filenames in the current working directory.
 - The TUI now launches the migrated wave/DC/AC analyses through the `Graphic Output` plugin tabs instead of the old dedicated Outputs-panel fields.
-- The TUI Mutation page now combines mutation settings, strategy settings, and Run controls, plus a help column with an equivalent CLI command.
+- The TUI `Core Mutations` page now combines mutation settings, strategy settings, and Run controls, plus a help column with an equivalent CLI command.
+- The TUI also exposes `55` and `aa` under the `Plugin Mutations` panel.
 - The TUI Segments pane now lists unused standard JPEG sections in a muted block under the detected segments.
 - SOF0, DQT, and DHT structured editors can highlight the corresponding serialized bytes in their left hex views based on the current value selection.
 - SOF markers are now grouped under an outer SOFn tab with one subtab per frame section.
+- Plugin context building now lives in a shared helper layer used by both `api.py` and the TUI instead of relying on API-private helpers.
+- Analysis and mutation registry loading now share one package-scanning helper instead of duplicating loader logic.
+- APP2 editor plumbing now centralizes ICC field collection/update generation, and all APP2 edit inputs trigger preview refresh consistently.
+- JPEG/EXIF/ICC protocol constants now live under `jpeg_fault/core/constants/` instead of being repeated inline across parser and TUI code.
+- `debug.py` is now just the lightweight debug logging layer; the unused instrumentation scaffolding was removed.
+- The full test suite is currently green: `129 passed` in the latest run.
 
 ## Current Mutation UX Notes
 
@@ -142,10 +152,16 @@ The biggest remaining risk is still TUI maintainability, not parser correctness 
 
 What is left:
 
-- reduce repeated editor mechanics across APP1/APP2 and the remaining DHT special cases
+- reduce repeated editor mechanics across APP1 and the remaining DHT special cases
 - improve runtime-oriented TUI/plugin coverage beyond fake widgets
 - extend the plugin system with more real plugin panels now that the shell is stable
 - tighten mutation UX/help wording so the TUI explains `sample`, `cumulative`, and `sequential` precisely
+
+## Plugin Placement Rule
+
+- Keep all built-in plugin implementations under `jpeg_fault/core/plugins/<plugin_name>/plugin.py`.
+- Plugin kind should be defined by what the plugin registers with, not by placing different families outside `plugins`.
+- If a new plugin family is introduced later, keep it in `jpeg_fault/core/plugins/` and add the matching registry/type definitions for that family.
 
 
 ## Core Data Model
@@ -734,7 +750,7 @@ It is **not** JPEG symbol entropy after Huffman decoding.
 
 ## DCT-Based Heatmaps
 
-Implemented in [dct_analysis.py](jpeg_fault/core/dct_analysis.py).
+Implemented in [dct_heatmap.py](jpeg_fault/core/plugins/_shared/dct_heatmap.py).
 
 These are source-image analyses, not direct bitstream decoders.
 

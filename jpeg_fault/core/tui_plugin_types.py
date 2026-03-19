@@ -11,6 +11,7 @@ class TuiPlugin(Protocol):
     panel_label: str
     tab_label: str
     analysis_plugin_id: str | None
+    mutation_plugin_id: str | None
 
     def build_tab(self, app) -> object: ...
 
@@ -23,4 +24,5 @@ class TuiPluginSpec:
     panel_label: str
     tab_label: str
     analysis_plugin_id: Optional[str] = None
+    mutation_plugin_id: Optional[str] = None
     build_tab: Optional[Callable[[object], object]] = None

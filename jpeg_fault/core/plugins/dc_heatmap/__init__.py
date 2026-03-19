@@ -1,1 +1,3 @@
-"""DC heatmap analysis plugin package."""
+from .plugin import plugin
+
+__all__ = ["plugin"]
