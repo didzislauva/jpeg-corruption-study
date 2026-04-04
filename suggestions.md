@@ -108,6 +108,7 @@ Recent TUI cleanup has improved consistency in a few places that should now be t
 - JPEG/EXIF/ICC protocol mappings now live under `jpeg_fault/core/constants/`.
 - image-driven Info-panel reload work is now deferred until after the selection event/refresh cycle.
 - dynamic nested Info-pane `TabPane` ids now include a rebuild generation to reduce duplicate-id collisions.
+- the Trace workspace now includes coefficient interpretation text and a `Visualisations` view with separate `Reconstruction` and `Wave Composition` previews
 - the latest focused TUI/plugin suite is green at `56 passed`.
 
 ## Constraints

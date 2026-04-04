@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from textual import on
@@ -11,10 +12,15 @@ from rich.text import Text
 
 from ..entropy_trace import BlockTrace, ScanTrace, ScanTraceChunk
 from ..debug import debug_log
+from ..jpeg_parse import decode_dqt_tables
 
 
 QUERY_ERRORS = (NoMatches, WrongType, AssertionError)
 TRACE_PAGE_SIZE = 10
+TRACE_WRAP_BYTES = 8
+TRACE_VISUAL_CANVAS_SIZE = 200
+TRACE_VISUAL_PREVIEW_WIDTH = 24
+TRACE_VISUAL_PREVIEW_HEIGHT = 24
 
 
 class TraceNavButton(Button):
@@ -109,7 +115,6 @@ class TuiEntropyTraceMixin:
                 classes="sof-left",
             ),
             VerticalScroll(
-                Static("Views: overview, bits, dc, ac, coefficients, tables", classes="field"),
                 TabbedContent(id=f"{key}-detail-tabs"),
                 classes="sof-right",
             ),
@@ -137,7 +142,40 @@ class TuiEntropyTraceMixin:
                 )
             )
         self.entropy_trace_log_ids[key] = log_ids
+        tabs.add_pane(
+            TabPane(
+                "Visualisations",
+                self._build_entropy_trace_visualisations_pane(key),
+                id=self._dynamic_pane_id(f"{key}-pane-visualisations"),
+            )
+        )
         setattr(tabs, "_trace_tabs_loaded", True)
+        return True
+
+    def _build_entropy_trace_visualisations_pane(self, key: str) -> VerticalScroll:
+        return VerticalScroll(TabbedContent(id=f"{key}-visuals-tabs"))
+
+    def _populate_entropy_trace_visualisations_tabs(self, key: str) -> bool:
+        try:
+            tabs = self.query_one(f"#{key}-visuals-tabs", TabbedContent)
+        except QUERY_ERRORS:
+            return False
+        if getattr(tabs, "_trace_visuals_tabs_loaded", False):
+            return False
+        tabs.clear_panes()
+        tabs.add_pane(
+            TabPane(
+                "Reconstruction",
+                VerticalScroll(Static("", id=f"{key}-visual-reconstruction", classes="field")),
+            )
+        )
+        tabs.add_pane(
+            TabPane(
+                "Wave Composition",
+                VerticalScroll(Static("", id=f"{key}-visual-wave", classes="field")),
+            )
+        )
+        setattr(tabs, "_trace_visuals_tabs_loaded", True)
         return True
 
     def _reset_entropy_trace_tabs(self, scans: list[ScanTrace] | None) -> list[tuple[str, ScanTrace]]:
@@ -262,8 +300,10 @@ class TuiEntropyTraceMixin:
         self.entropy_trace_pages.setdefault(key, 0)
         self.entropy_trace_selected.setdefault(key, 0)
         if self._populate_entropy_trace_detail_tabs(key):
+            self.call_after_refresh(self._populate_entropy_trace_visualisations_tabs, key)
             self.call_after_refresh(self._render_entropy_trace_page, key)
             return
+        self._populate_entropy_trace_visualisations_tabs(key)
         self._render_entropy_trace_page(key)
 
     def _render_entropy_trace_page(self, key: str) -> None:
@@ -387,6 +427,9 @@ class TuiEntropyTraceMixin:
                 f"EOB={step.is_eob} ZRL={step.is_zrl}"
             )
 
+        for line in self._trace_coefficient_interpretation_lines(block):
+            coeffs.write(line)
+        coeffs.write("")
         coeffs.write("Zigzag coefficients:")
         coeffs.write(" ".join(str(value) for value in block.zz_coeffs))
         coeffs.write("")
@@ -394,6 +437,7 @@ class TuiEntropyTraceMixin:
         for row in range(8):
             start = row * 8
             coeffs.write(" ".join(f"{value:4d}" for value in block.natural_coeffs[start:start + 8]))
+        self._render_entropy_trace_visual(key, block)
 
         tables.write(f"DC table id: {block.dc_table_id}")
         tables.write(f"AC table id: {block.ac_table_id}")
@@ -454,7 +498,7 @@ class TuiEntropyTraceMixin:
         last_index = len(values) - 1
         for idx, value in enumerate(values):
             if idx:
-                text.append(" ")
+                self._append_trace_byte_separator(text, idx)
             style = ""
             if first_index == last_index == idx:
                 style = "bold black on yellow"
@@ -470,31 +514,228 @@ class TuiEntropyTraceMixin:
         if not values:
             return None
         text = Text()
+        inactive_style = "grey50"
         first_index = 0
         last_index = len(values) - 1
         for idx, value in enumerate(values):
             if idx:
-                text.append(" ")
+                self._append_trace_byte_separator(text, idx)
             bits = f"{value:08b}"
             if first_index == last_index == idx:
                 start = block.start_bit_in_byte
                 end = block.end_bit_in_byte + 1
-                text.append(bits[:start])
+                text.append(bits[:start], style=inactive_style)
                 text.append(bits[start:end], style="bold black on yellow")
-                text.append(bits[end:])
+                text.append(bits[end:], style=inactive_style)
                 continue
             if idx == first_index:
                 start = block.start_bit_in_byte
-                text.append(bits[:start])
+                text.append(bits[:start], style=inactive_style)
                 text.append(bits[start:], style="bold black on cyan")
                 continue
             if idx == last_index:
                 end = block.end_bit_in_byte + 1
                 text.append(bits[:end], style="bold black on magenta")
-                text.append(bits[end:])
+                text.append(bits[end:], style=inactive_style)
                 continue
             text.append(bits)
         return text
+
+    def _append_trace_byte_separator(self, text: Text, idx: int) -> None:
+        if idx % TRACE_WRAP_BYTES == 0:
+            text.append("\n")
+            return
+        text.append(" ")
+
+    def _render_entropy_trace_visual(self, key: str, block: BlockTrace) -> None:
+        try:
+            reconstruction_widget = self.query_one(f"#{key}-visual-reconstruction", Static)
+            wave_widget = self.query_one(f"#{key}-visual-wave", Static)
+        except QUERY_ERRORS:
+            return
+        coeffs = list(block.natural_coeffs)
+        quant_grid = self._trace_quant_natural_grid(block.quant_table_id)
+        if quant_grid is None:
+            message = "Preview unavailable: missing quantization table."
+            reconstruction_widget.update(message)
+            wave_widget.update(message)
+            return
+        reconstruction_pixels = self._trace_visual_reconstruction_pixels(coeffs, quant_grid, TRACE_VISUAL_CANVAS_SIZE)
+        wave_pixels = self._trace_visual_wave_pixels(coeffs, quant_grid, TRACE_VISUAL_CANVAS_SIZE)
+        reconstruction_widget.update(self._trace_visual_preview_text("Reconstruction", reconstruction_pixels))
+        wave_widget.update(self._trace_visual_preview_text("Wave Composition", wave_pixels))
+
+    def _trace_visual_strongest_term(self, coeffs: list[int]) -> tuple[int, int, int] | None:
+        best_index = None
+        best_value = 0
+        for idx, value in enumerate(coeffs[1:], start=1):
+            if abs(value) > abs(best_value):
+                best_index = idx
+                best_value = value
+        if best_index is None or best_value == 0:
+            return None
+        return best_index // 8, best_index % 8, best_value
+
+    def _trace_coefficient_interpretation_lines(self, block: BlockTrace) -> list[str]:
+        coeffs = list(block.natural_coeffs)
+        strongest = self._trace_visual_strongest_term(coeffs)
+        lines = [
+            "Interpretation:",
+            (
+                f"- DC = {coeffs[0]}: the block's low-frequency base level, "
+                "roughly its overall brightness in JPEG transform space."
+            ),
+            "- AC terms add variation on top of that base; larger magnitudes contribute more strongly.",
+            "- Negative values are normal and mean that basis pattern contributes in the opposite phase.",
+            "- Zigzag is JPEG storage order; Natural 8x8 is the same values mapped back into frequency positions.",
+        ]
+        if strongest is None:
+            lines.append("- Strongest AC term: <none>")
+        else:
+            u, v, value = strongest
+            lines.append(f"- Strongest AC term: ({u},{v}) = {value}")
+        return lines
+
+    def _trace_visual_reconstruction_pixels(
+        self,
+        natural_coeffs: list[int],
+        quant_grid: list[int],
+        canvas_size: int,
+    ) -> list[list[int]]:
+        samples = self._trace_visual_sample_block(natural_coeffs, quant_grid)
+        return self._trace_visual_upscale_block(samples, canvas_size)
+
+    def _trace_visual_wave_pixels(
+        self,
+        natural_coeffs: list[int],
+        quant_grid: list[int],
+        canvas_size: int,
+    ) -> list[list[int]]:
+        dequant = [coef * quant for coef, quant in zip(natural_coeffs, quant_grid)]
+        raw: list[list[float]] = []
+        max_abs = 0.0
+        for y in range(canvas_size):
+            row: list[float] = []
+            fy = ((y + 0.5) * 8.0 / canvas_size) - 0.5
+            for x in range(canvas_size):
+                fx = ((x + 0.5) * 8.0 / canvas_size) - 0.5
+                value = self._trace_visual_idct_value(dequant, fx, fy)
+                row.append(value)
+                max_abs = max(max_abs, abs(value))
+            raw.append(row)
+        if max_abs <= 1e-9:
+            return [[128 for _ in range(canvas_size)] for _ in range(canvas_size)]
+        pixels: list[list[int]] = []
+        for row in raw:
+            pixels.append([self._clamp_byte(128.0 + (127.0 * value / max_abs)) for value in row])
+        return pixels
+
+    def _trace_visual_sample_block(self, natural_coeffs: list[int], quant_grid: list[int]) -> list[list[int]]:
+        dequant = [coef * quant for coef, quant in zip(natural_coeffs, quant_grid)]
+        samples: list[list[int]] = []
+        for y in range(8):
+            row: list[int] = []
+            for x in range(8):
+                value = 128.0 + self._trace_visual_idct_value(dequant, x, y)
+                row.append(self._clamp_byte(value))
+            samples.append(row)
+        return samples
+
+    def _trace_visual_idct_value(self, natural_coeffs: list[int], x: float, y: float) -> float:
+        total = 0.0
+        for u in range(8):
+            cu = 1.0 / math.sqrt(2.0) if u == 0 else 1.0
+            for v in range(8):
+                coeff = natural_coeffs[(u * 8) + v]
+                if coeff == 0:
+                    continue
+                cv = 1.0 / math.sqrt(2.0) if v == 0 else 1.0
+                total += (
+                    cu
+                    * cv
+                    * coeff
+                    * math.cos(((2.0 * x) + 1.0) * u * math.pi / 16.0)
+                    * math.cos(((2.0 * y) + 1.0) * v * math.pi / 16.0)
+                )
+        return 0.25 * total
+
+    def _trace_visual_upscale_block(self, samples: list[list[int]], canvas_size: int) -> list[list[int]]:
+        pixels: list[list[int]] = []
+        for y in range(canvas_size):
+            source_y = min(7, int(y * 8 / canvas_size))
+            row: list[int] = []
+            for x in range(canvas_size):
+                source_x = min(7, int(x * 8 / canvas_size))
+                row.append(samples[source_y][source_x])
+            pixels.append(row)
+        return pixels
+
+    def _trace_visual_pixels_to_text(self, pixels: list[list[int]]) -> Text:
+        text = Text()
+        height = len(pixels)
+        width = len(pixels[0]) if pixels else 0
+        if not width or not height:
+            text.append("Preview unavailable.")
+            return text
+        for row_index in range(TRACE_VISUAL_PREVIEW_HEIGHT):
+            if row_index:
+                text.append("\n")
+            y0 = int(row_index * height / TRACE_VISUAL_PREVIEW_HEIGHT)
+            y1 = max(y0 + 1, int((row_index + 1) * height / TRACE_VISUAL_PREVIEW_HEIGHT))
+            for col_index in range(TRACE_VISUAL_PREVIEW_WIDTH):
+                x0 = int(col_index * width / TRACE_VISUAL_PREVIEW_WIDTH)
+                x1 = max(x0 + 1, int((col_index + 1) * width / TRACE_VISUAL_PREVIEW_WIDTH))
+                total = 0
+                count = 0
+                for yy in range(y0, min(y1, height)):
+                    for xx in range(x0, min(x1, width)):
+                        total += pixels[yy][xx]
+                        count += 1
+                value = total // max(1, count)
+                style = f"on rgb({value},{value},{value})"
+                text.append("  ", style=style)
+        return text
+
+    def _trace_visual_preview_text(self, title: str, pixels: list[list[int]]) -> Text:
+        text = Text()
+        text.append(title)
+        text.append("\n\n")
+        text.append_text(self._trace_visual_pixels_to_text(pixels))
+        return text
+
+    def _trace_quant_natural_grid(self, table_id: int) -> list[int] | None:
+        data = getattr(self, "info_data", None)
+        segments = getattr(self, "info_segments", None)
+        if data is None or segments is None:
+            return None
+        for seg in segments:
+            if seg.name != "DQT" or seg.payload_offset is None or seg.payload_length is None:
+                continue
+            payload = data[seg.payload_offset:seg.payload_offset + seg.payload_length]
+            for table in decode_dqt_tables(payload):
+                if int(table.get("id", -1)) != table_id:
+                    continue
+                values = list(table.get("values", []))[:64]
+                natural = [0] * 64
+                for idx, value in enumerate(values):
+                    zigzag_pos = idx
+                    natural_index = self._trace_visual_natural_index_from_zigzag(zigzag_pos)
+                    natural[natural_index] = int(value)
+                return natural
+        return None
+
+    def _trace_visual_natural_index_from_zigzag(self, zigzag_index: int) -> int:
+        from ..constants.jpeg import JPEG_ZIGZAG_ORDER
+
+        return JPEG_ZIGZAG_ORDER[zigzag_index]
+
+    def _clamp_byte(self, value: float) -> int:
+        return max(0, min(255, int(round(value))))
+
+    def _entropy_trace_key_from_widget_id(self, widget_id: str | None, suffix: str) -> str | None:
+        if not widget_id or not widget_id.endswith(suffix):
+            return None
+        return widget_id[: -len(suffix)]
 
     def _entropy_trace_select_block(self, key: str, block_index: int) -> None:
         scan = self.entropy_trace_scans.get(key)
@@ -577,3 +818,11 @@ class TuiEntropyTraceMixin:
         if 0 <= page < total_pages:
             self.entropy_trace_pages[key] = page
             self._render_entropy_trace_page(key)
+
+    def _render_entropy_trace_visual_for_selected_block(self, key: str) -> None:
+        scan = self.entropy_trace_scans.get(key)
+        if scan is None or not scan.blocks:
+            return
+        block_index = self.entropy_trace_selected.get(key, 0)
+        block_index = max(0, min(block_index, len(scan.blocks) - 1))
+        self._render_entropy_trace_visual(key, scan.blocks[block_index])

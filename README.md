@@ -76,6 +76,7 @@ The focus is to understand how small perturbations (byte arithmetic or bit flips
 - `gradient.jpg` — Example input image
 - `mutations/` — Default output directory for mutated files
 - `README.md` — This documentation
+- `SKILLS.md` — Lessons learned from building and debugging the app, especially the TUI and Trace workspace
 
 ## Requirements
 
@@ -177,7 +178,9 @@ The TUI includes:
 - File browser with JPEG-only list
 - Input panel with live JPEG preview (ASCII thumbnail), dimensions, size, and a `Debug logging` toggle
 - Info tab with segment list, decoded details, entropy ranges inside `Segments`, and full-hex view
-- Trace workspace with one subtab per `SOS` / scan, a paged MCU/block list, manual `Load Trace` control, and selected-block views for bit spans, DC/AC steps, coefficients, and table provenance
+- Trace workspace with one subtab per `SOS` / scan, a paged MCU/block list, manual `Load Trace` control, and selected-block views for bit spans, DC/AC steps, coefficients, table provenance, and visualizations
+- Trace `Coefficients` includes interpretation text explaining `DC`, `AC`, signed coefficients, and zigzag vs natural `8x8` ordering
+- Trace `Visualisations` contains nested `Reconstruction` and `Wave Composition` tabs for the selected traced block
 - APP0 editor (simple fields + advanced raw hex) with live preview and save
 - SOFn tab with per-section subtabs; SOF0 keeps the editable frame-header workspace and other SOF markers are shown in read-only frame/components/tables views
 - SOS tab with per-scan header/components/flow/links/edit views and structured/raw editing

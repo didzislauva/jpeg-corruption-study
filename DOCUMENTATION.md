@@ -14,6 +14,8 @@ This document is an extended, file-by-file reference for all Python classes and 
 - Added a built-in `sliding_wave` analysis plugin with typed params and CSV export.
 - Added a new `entropy_trace` analysis plugin backed by a reusable `jpeg_fault/core/entropy_trace.py` baseline scan tracer.
 - Added a new TUI Info -> Trace workspace that reuses `jpeg_fault/core/entropy_trace.py` for per-scan block inspection.
+- Added coefficient interpretation text to the Trace `Coefficients` tab so `DC`, `AC`, signed values, and zigzag vs natural ordering are explained in-place.
+- Added a Trace `Visualisations` workspace that shows `Reconstruction` and `Wave Composition` previews for the selected traced block.
 - Fixed TUI plugin panel initialization to respect Textual's real widget lifecycle.
 - Forced chart/heatmap modules onto the matplotlib `Agg` backend to avoid TUI worker thread crashes.
 - Added a full SOS TUI workspace with structured/raw editing, scan/component linkage views, and live preview.
@@ -198,6 +200,7 @@ Current wrap-up and next cleanup targets:
 - `jpeg_fault/core/ssim_analysis.py` computes metrics and writes charts.
 - `jpeg_fault/core/wave_analysis.py` writes entropy stream wave charts.
 - `jpeg_fault/core/entropy_trace.py` traces entropy scans into block-level decode events.
+- `jpeg_fault/core/tui/entropy_trace.py` renders the Trace workspace, including coefficient interpretation and the `Visualisations` preview tabs.
 - `jpeg_fault/core/plugins/_shared/dct_heatmap.py` writes DC/AC energy heatmaps.
 - `jpeg_fault/core/analysis_types.py` defines analysis plugin param specs, needs, contexts, and results.
 - `jpeg_fault/core/plugin_contexts.py` builds analysis and mutation plugin contexts for shared host use.

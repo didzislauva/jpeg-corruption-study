@@ -1,8 +1,9 @@
 You are Codex, working in `jpeg_corruption_study`.
 
 First, read `codex.md` and follow all project rules. Then read `DOCUMENTATION.md`
-for the current architecture and TUI details. Run `rg` if you need to locate
-specific functions.
+for the current architecture and TUI details, and `SKILLS.md` for implementation
+lessons learned from the existing code and past bugs. Run `rg` if you need to
+locate specific functions.
 
 Current priorities:
 1) Maintain the 60-line function rule by refactoring into helpers when needed.
@@ -33,6 +34,7 @@ Current baseline:
 - A new built-in `entropy_trace` analysis plugin now exists and is backed by a reusable `jpeg_fault/core/entropy_trace.py` baseline scan tracer.
 - The first `entropy_trace` slice writes text or JSON artifacts per JPEG, one trace stream per `SOS`, with block-level bit spans, file-byte provenance, table provenance, and decoded coefficient traces for baseline sequential scans.
 - The TUI Info panel now includes a `Trace` workspace with one tab per scan, a paged block list, and selected-block detail pages backed by `entropy_trace.py`.
+- The Trace workspace now also includes coefficient interpretation text plus a `Visualisations` tab with nested `Reconstruction` and `Wave Composition` previews for the selected block.
 - Progressive/refinement scans are recognized structurally by `entropy_trace` but are not yet fully block-traced.
 - The TUI `Outputs` panel no longer contains the migrated wave/DC/AC analysis controls; those are launched from plugin tabs.
 - The TUI `Core Mutations` page now combines mutation settings, strategy settings, and the run button in one page, with a third help column that explains current behavior and shows an equivalent CLI command.
@@ -64,7 +66,7 @@ Next-session handoff:
 - Keep all built-in plugin implementations under `jpeg_fault/core/plugins/<plugin_name>/plugin.py`.
 - Keep the TUI implementation in `jpeg_fault/core/tui/`.
 - If continuing plugin work, prefer extending tests or adding new analysis plugins rather than revisiting the already-migrated wave/DC/AC heatmap paths.
-- If continuing entropy-trace work, the next high-value steps are byte-boundary highlighting polish, better block navigation UX, and broader progressive JPEG support on top of the existing TUI Trace workspace.
+- If continuing entropy-trace work, the next high-value steps are visualization polish, better block navigation UX, byte-boundary highlighting polish, and broader progressive JPEG support on top of the existing TUI Trace workspace.
 - If continuing TUI work, the highest-value unfinished correctness refactor is still the nested `TabbedContent` rebuild model in the Info panel. The code is more defensive now, but the long-term fix is to stop destructively rebuilding those nested tab trees on image switch.
 - If continuing TUI work, keep regression coverage around stale-event races in both APP0 and Trace workspace rendering paths during rapid image switching.
 - If continuing TUI/plugin work, preserve the current panel split:
